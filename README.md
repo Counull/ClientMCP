@@ -33,6 +33,8 @@ https://github.com/Counull/ClientMCP.git?path=/Project/Packages/com.counull.clie
 
 本次不发布正式版本标签。首次包版本为 `0.1.0-preview.1`，仅表示初始化阶段。
 
+已用独立 Unity 6000.5.9f1 工程验证上述 `#main` Git URL 安装、包注册和编译通过；尚未验证 Player 构建、IL2CPP 或实际诊断功能。
+
 ## 文档
 
 - [文档入口](doc/README.md)

@@ -49,6 +49,8 @@ https://github.com/Counull/ClientMCP.git?path=/Project/Packages/com.counull.clie
 
 上面的版本 URL 是发布示例，本次不会创建 `v0.1.0` 标签。初始化快照可使用 `#main`，但它不是稳定版本。
 
+2026-09-30 已在独立 Unity 6000.5.9f1 消费工程实测 `#main` 安装地址：包来源为 `Git`，解析到初始化提交 `4333688`，包注册和编译检查通过，Unity 正常退出。这里的验证不包含 Player 构建或 MCP 功能。
+
 UPM 的 Git 依赖必须写在使用方工程的 `manifest.json` 中，不能在本包的 `package.json` 里用 Git URL 声明另一个包依赖。使用方应安装 Git 并使其可从 PATH 找到。
 
 ## 后续发布步骤

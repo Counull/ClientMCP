@@ -22,7 +22,7 @@ https://github.com/Counull/ClientMCP.git?path=/Project/Packages/com.counull.clie
 - Git：需已安装并加入 PATH。
 - 其他 Unity 版本、Player 构建与 IL2CPP 尚未验证。
 
-开发进展见 [项目文档](doc/README.md)。
+项目设计见 [远程诊断连接方案](doc/remote-diagnostics.md)。
 
 ## 许可证
 

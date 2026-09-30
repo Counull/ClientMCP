@@ -2,6 +2,8 @@
 
 本目录是 ClientMCP 开源项目的 LLM-Workflow 文档实例，仅记录本项目可公开的信息。
 
+设计讨论、方案说明和交接材料统一放在本目录，写得简单直白；AI 所需上下文与依据也在这里维护。按需更新已有专题，不按聊天轮次生成文档。
+
 ## 快速入口
 
 1. 阅读唯一当前状态：[status.md](status.md)。
@@ -13,6 +15,7 @@
 - 代码目录：[Project](../Project/)，开发验证版本为 Unity 6000.5.9f1。
 - 工程结构、安装地址与版本发布：[工程结构与 UPM 发布流程](architecture-and-release.md)。
 - 结构图：[单仓库 UPM 发布图](images/repository-upm.svg)。
+- 领域术语：[CONTEXT.md](../CONTEXT.md)；远程连接方案：[远程诊断连接草案](remote-diagnostics.md)。
 - Matt 工程技能配置：[GitHub Issues](agents/issue-tracker.md)、[默认分类标签](agents/triage-labels.md)、[领域文档](agents/domain.md)。
 - 权威协议：[LLM_WORKFLOW.md](https://github.com/Counull/LLM-Workflow/blob/main/LLM_WORKFLOW.md)。本实例不复制完整协议。
 - 只处理用户授权的 Unity 客户端范围；后端默认只读。

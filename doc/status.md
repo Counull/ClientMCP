@@ -4,6 +4,12 @@
 
 ## Now
 
+- 已明确通用反射调试目标：尽量一次实现、持续复用，接口数量不随业务功能数量增长；对象定位、结构查看、字段读取与显式写入的接口划分仍处于讨论阶段，见 [设计草案](remote-diagnostics.md)。
+
+- 设计讨论与说明统一放在 `doc/`。当前准则为“如非必要，勿增实体”：只保留最小实现所需内容，不维护备选方案或提前增加组件与抽象。
+
+- 已记录客户端主动连接公网服务端、开发者通过标准 MCP 接入的方案方向；术语与未定选型见 [远程诊断连接草案](remote-diagnostics.md)。尚未实现或验证远程连接。
+
 - 已使用 Unity 6000.5.9f1 创建 `Project/` 开发验证工程，并生成 `DiagnosticsSandbox` 场景。
 - UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.1`；当前仅为程序集与包结构骨架，尚未实现 MCP 接口。
 - 整个工程与文档已发布至 [Counull/ClientMCP](https://github.com/Counull/ClientMCP) 公开仓库，默认分支为 `main`。采用 MIT 许可证。
@@ -15,7 +21,7 @@
 ## Next
 
 - 确定首个诊断场景、目标平台及 Mono/IL2CPP，再评估官方 Unity CLI/Pipeline 与自研运行时接口的分工。
-- 明确首批只读诊断工具及反射访问边界，再开始功能实现。
+- 围绕通用反射确定对象定位、字段路径及读写接口，明确访问范围，再开始功能实现。
 
 ## Blocked
 

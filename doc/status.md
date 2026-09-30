@@ -9,6 +9,8 @@
 - 整个工程与文档已发布至 [Counull/ClientMCP](https://github.com/Counull/ClientMCP) 公开仓库，默认分支为 `main`。采用 MIT 许可证。
 - 已用独立消费工程验证 HTTPS Git URL 子目录安装，无需手动复制包或源码。
 - Git URL 安装、版本标签及源码维护方式见 [工程结构与 UPM 发布流程](architecture-and-release.md)。
+- 已配置 Matt Pocock 工程技能：任务与规格使用 GitHub Issues，采用五个默认分类标签和 single-context 领域文档布局。配置入口见 [任务管理](agents/issue-tracker.md)、[标签映射](agents/triage-labels.md)、[领域文档](agents/domain.md)。
+- 本次仅完成仓库内技能配置，未创建远端标签或业务任务；该配置尚未推送。
 
 ## Next
 

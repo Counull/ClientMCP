@@ -31,3 +31,17 @@
 - 提交信息遵守 Conventional Commits 1.0.0：`<type>[可选(scope)][可选!]: <中文摘要>`。type 用小写英文，正文及页脚自然语言使用简体中文；破坏性变更用 `!` 或 `BREAKING CHANGE: 中文说明` 标记。
 - 不擅自 amend、rebase 或重写既有历史。未经明确推送授权禁止 git push，包括标签与强制推送。
 - 提交后报告分支名、提交短哈希、完整提交信息及“未推送”。本工作区未初始化 Git 时，不为创建说明文档而擅自初始化仓库。
+
+## Agent skills
+
+### Issue tracker
+
+任务与规格使用 Counull/ClientMCP 的 GitHub Issues，见 [任务管理约定](doc/agents/issue-tracker.md)。
+
+### Triage labels
+
+使用五个默认分类标签，见 [标签映射](doc/agents/triage-labels.md)。
+
+### Domain docs
+
+采用 single-context：根目录 CONTEXT.md 与 doc/adr/ 按需建立，见 [领域文档约定](doc/agents/domain.md)。

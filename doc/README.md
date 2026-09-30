@@ -13,6 +13,7 @@
 - 代码目录：[Project](../Project/)，开发验证版本为 Unity 6000.5.9f1。
 - 工程结构、安装地址与版本发布：[工程结构与 UPM 发布流程](architecture-and-release.md)。
 - 结构图：[单仓库 UPM 发布图](images/repository-upm.svg)。
+- Matt 工程技能配置：[GitHub Issues](agents/issue-tracker.md)、[默认分类标签](agents/triage-labels.md)、[领域文档](agents/domain.md)。
 - 权威协议：[LLM_WORKFLOW.md](https://github.com/Counull/LLM-Workflow/blob/main/LLM_WORKFLOW.md)。本实例不复制完整协议。
 - 只处理用户授权的 Unity 客户端范围；后端默认只读。
 - 需求、方案、决策和验证页按实际需要添加；当前状态统一维护在 `status.md`。

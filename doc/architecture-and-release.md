@@ -55,14 +55,14 @@ UPM 的 Git 依赖必须写在使用方工程的 `manifest.json` 中，不能在
 
 ## 后续发布步骤
 
-1. 在独立任务分支完成修改与验证，更新 `package.json` 版本及 `CHANGELOG.md`。
+1. 日常在 `main` 完成修改与验证；需要隔离开发时使用 `dev`。发布版本前更新 `package.json` 版本及 `CHANGELOG.md`。
 2. 在 Unity 验证工程中检查编译和真实功能；发布前再用干净的消费工程验证 Git URL 安装。运行时能力需要额外验证 Player，Editor 成功不代表 IL2CPP 成功。
-3. 审查 diff 和公开内容后创建中文 Conventional Commit；通过既定审阅流程确定发布提交。
+3. 审查 diff 和公开内容后创建中文 Conventional Commit；本个人项目不强制 PR 或分支保护，日常提交可直接推送。
 4. 用户明确授权本次发布和推送后，为发布提交创建不可随意移动的标签。例如版本 `0.1.0` 对应 `v0.1.0`，预览版本可使用 `v0.1.0-preview.1`。
 5. 推送对应分支和指定标签。GitHub Release 可选，用于发布说明；Git URL 安装本身只需要远端 Git 引用，不需要上传 DLL 或 `.unitypackage`。
 6. 使用方把 URL 中的标签改为新版本，并提交更新后的 `manifest.json` 和 `packages-lock.json`。
 
-以下命令仅说明将来的流程，不代表已经执行或获得以后推送的授权：
+以下命令仅说明将来的版本发布流程，不代表已经执行或获得创建版本标签的授权：
 
 ```bash
 git tag -a v0.1.0 <发布提交SHA> -m "发布 ClientMCP 0.1.0"

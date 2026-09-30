@@ -1,0 +1,20 @@
+{
+  "name": "com.counull.clientmcp",
+  "version": "0.1.0-preview.1",
+  "displayName": "ClientMCP",
+  "description": "Unity runtime diagnostics and MCP integration exploration. Initial package scaffold; no MCP transport or diagnostic tools are implemented yet.",
+  "unity": "6000.5",
+  "unityRelease": "9f1",
+  "license": "MIT",
+  "author": { "name": "Counull", "url": "https://github.com/Counull" },
+  "documentationUrl": "https://github.com/Counull/ClientMCP#readme",
+  "changelogUrl": "https://github.com/Counull/ClientMCP/blob/main/Project/Packages/com.counull.clientmcp/CHANGELOG.md",
+  "licensesUrl": "https://github.com/Counull/ClientMCP/blob/main/LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Counull/ClientMCP.git",
+    "directory": "Project/Packages/com.counull.clientmcp"
+  },
+  "keywords": [ "mcp", "diagnostics", "debugging" ],
+  "dependencies": {}
+}

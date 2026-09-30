@@ -1,0 +1,27 @@
+# Unity generated state
+**/[Ll]ibrary/
+**/[Tt]emp/
+**/[Oo]bj/
+**/[Ll]ogs/
+**/[Uu]ser[Ss]ettings/
+**/[Bb]uild/
+**/[Bb]uilds/
+**/MemoryCaptures/
+**/Recordings/
+# Local tools and evidence
+.scratch/
+.codex/
+.vs/
+.idea/
+.vscode/
+*.csproj
+*.sln
+*.slnx
+*.user
+*.pidb
+*.booproj
+*.pdb
+*.mdb
+*.tmp
+.DS_Store
+Thumbs.db

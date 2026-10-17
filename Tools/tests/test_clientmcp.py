@@ -103,6 +103,64 @@ class TestClientMcp(unittest.TestCase):
         result = self.client().request("set", target="o1", member="name", value="运行对象")
         self.assertEqual(result["path"], "/reflect")
         self.assertEqual(result["received"]["value"], "运行对象")
+        self.assertEqual(result["received"]["description"], "写入成员")
+
+    def test_helpers_send_default_descriptions_in_http_body(self):
+        client = self.client()
+        operations = (
+            ("types", lambda: client.types(), "查找类型"),
+            ("find", lambda: client.find("Example.Type"), "定位运行对象"),
+            ("inspect", lambda: client.inspect("o1"), "查看成员元数据"),
+            ("get", lambda: client.get("o1", "Value"), "读取成员"),
+            ("set", lambda: client.set("o1", "Value", 23), "写入成员"),
+            ("create", lambda: client.create("Example.Type"), "创建对象"),
+            ("invoke", lambda: client.invoke("o1", "UpdateValue"), "调用方法"),
+            ("release", lambda: client.release("o1"), "释放对象引用"),
+        )
+        for operation, call, description in operations:
+            with self.subTest(operation=operation):
+                received = call()["received"]
+                self.assertEqual(received["op"], operation)
+                self.assertEqual(received["description"], description)
+
+    def test_explicit_descriptions_preserve_helper_payloads(self):
+        client = self.client()
+        operations = (
+            ("types", ("Example",), {"offset": 2, "limit": 3}),
+            ("find", ("Example.Type",), {"scope": "loaded", "offset": 2, "limit": 3}),
+            ("inspect", ({"$ref": "o1"},), {}),
+            ("get", ("o1", "Value"), {"kind": "property", "declaring_type": "Example.Base"}),
+            ("set", ("o1", "Value", {"x": 17, "text": "值保持不变"}), {}),
+            ("create", ("Example.Type", ["原始参数"]), {"parameter_types": ["System.String"]}),
+            ("invoke", ("o1", "Accept", [{"$ref": "o2"}]),
+             {"parameter_types": ["System.Object"], "declaring_type": "Example.Base"}),
+            ("release", (["o1", {"$ref": "o2"}],), {}),
+            ("release", (), {"all": True}),
+        )
+        for operation, args, kwargs in operations:
+            with self.subTest(operation=operation, kwargs=kwargs):
+                helper = getattr(client, operation)
+                baseline = helper(*args, **kwargs)["received"]
+                description = "  说明这次操作的用途  "
+                received = helper(*args, **kwargs, description=description)["received"]
+                self.assertEqual(received.pop("description"), description)
+                baseline.pop("description")
+                self.assertEqual(received, baseline)
+
+    def test_explicit_invalid_descriptions_are_not_replaced(self):
+        client = self.client()
+        # 客户端保留显式输入，让实际运行时统一校验；mock 只回显收到的 HTTP 正文。
+        for description in (None, "", " \t ", "说明\n换行", "长" * 201):
+            with self.subTest(description=description):
+                direct = client.request("get", target="o1", member="Value",
+                                        description=description)["received"]
+                helper = client.get("o1", "Value", description=description)["received"]
+                self.assertEqual(direct["description"], description)
+                self.assertEqual(helper["description"], description)
+
+    def test_unknown_operation_uses_generic_description(self):
+        received = self.client().request("unknown-operation")["received"]
+        self.assertEqual(received["description"], "执行反射操作")
 
     def test_empty_type_query_is_omitted(self):
         self.assertNotIn("query", self.client().types()["received"])
@@ -164,13 +222,35 @@ class TestClientMcp(unittest.TestCase):
         options = ["--endpoint", self.endpoint, "--token", "test-private-token"]
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(main(options + ['{"op":"types","query":"System.String"}']), 0)
-        self.assertEqual(json.loads(output.getvalue())["received"]["query"], "System.String")
+            self.assertEqual(main(options + [
+                '{"op":"types","query":"System.String","description":"查询字符串类型"}'
+            ]), 0)
+        received = json.loads(output.getvalue())["received"]
+        self.assertEqual(received["query"], "System.String")
+        self.assertEqual(received["description"], "查询字符串类型")
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors):
             self.assertEqual(main(options + ["{bad json"]), 1)
         self.assertIn("JSON", errors.getvalue())
         self.assertNotIn("test-private-token", errors.getvalue())
+
+    def test_cli_requires_explicit_description(self):
+        options = ["--endpoint", self.endpoint, "--token", "test-private-token"]
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            self.assertEqual(main(options + ['{"op":"types"}']), 1)
+        self.assertIn("description", errors.getvalue())
+        self.assertNotIn("test-private-token", errors.getvalue())
+
+    def test_cli_preserves_explicit_invalid_description_for_runtime_validation(self):
+        options = ["--endpoint", self.endpoint, "--token", "test-private-token"]
+        for description in (None, ""):
+            with self.subTest(description=description):
+                output = io.StringIO()
+                payload = json.dumps({"op": "types", "description": description})
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(main(options + [payload]), 0)
+                self.assertEqual(json.loads(output.getvalue())["received"]["description"], description)
 
 
 if __name__ == "__main__":

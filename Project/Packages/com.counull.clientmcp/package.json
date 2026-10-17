@@ -1,6 +1,6 @@
 {
   "name": "com.counull.clientmcp",
-  "version": "0.1.0-preview.2",
+  "version": "0.1.0-preview.3",
   "displayName": "ClientMCP",
   "description": "Runtime reflection primitives for external scripts and MCP clients. Explicitly enabled, authenticated localhost access in Editor Play Mode and Players.",
   "unity": "2022.3",

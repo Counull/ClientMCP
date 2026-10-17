@@ -35,8 +35,8 @@ namespace ClientMcp
                         {
                             ["protocolVersion"] = SupportsVersion(requested) ? requested : ProtocolVersion,
                             ["capabilities"] = new JObject { ["tools"] = new JObject { ["listChanged"] = false } },
-                            ["serverInfo"] = new JObject { ["name"] = "ClientMCP", ["version"] = "0.1.0-preview.2" },
-                            ["instructions"] = "Use reflection primitives on the running instance. Get member metadata before writes or invocation. Operations run on Unity's main thread; do not call blocking methods."
+                            ["serverInfo"] = new JObject { ["name"] = "ClientMCP", ["version"] = "0.1.0-preview.3" },
+                            ["instructions"] = "Use reflection primitives on the running instance. Every reflection operation must include a short Chinese description of its intent for the runtime activity log. Get member metadata before writes or invocation. Operations run on Unity's main thread; do not call blocking methods."
                         };
                         break;
                     case "ping": result = new JObject(); break;
@@ -56,13 +56,14 @@ namespace ClientMcp
                 new JObject
                 {
                     ["name"] = "clientmcp_reflect",
-                    ["description"] = "通用运行时反射：types/find/inspect/get/set/create/invoke/release。实例用target句柄，静态用type；字段默认kind=field，属性须kind=property；对象参数用{$ref:句柄}。先inspect获取成员与parameterTypes，不自动调用getter。",
+                    ["description"] = "通用运行时反射：types/find/inspect/get/set/create/invoke/release。每次调用必须提供简短中文description说明操作意图，显示在运行时活动记录和Unity Console中，不要包含凭据。实例用target句柄，静态用type；字段默认kind=field，属性须kind=property；对象参数用{$ref:句柄}。先inspect获取成员与parameterTypes，不自动调用getter。",
                     ["inputSchema"] = new JObject
                     {
-                        ["type"] = "object", ["required"] = new JArray("op"),
+                        ["type"] = "object", ["required"] = new JArray("op", "description"),
                         ["properties"] = new JObject
                         {
                             ["op"] = new JObject { ["type"] = "string", ["enum"] = new JArray("types", "find", "inspect", "get", "set", "create", "invoke", "release") },
+                            ["description"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 200, ["description"] = "必填的简短中文操作说明，用于活动记录和Unity Console；去除首尾空白后为1至200字符，不能包含控制字符或凭据。" },
                             ["target"] = new JObject { ["type"] = "string" }, ["type"] = new JObject { ["type"] = "string" },
                             ["member"] = new JObject { ["type"] = "string" }, ["kind"] = new JObject { ["type"] = "string", ["enum"] = new JArray("field", "property") },
                             ["value"] = new JObject(), ["args"] = new JObject { ["type"] = "array" },

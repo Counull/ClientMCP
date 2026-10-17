@@ -14,8 +14,10 @@
 
 - 首版本机入口直接位于 Unity Runtime：默认关闭、显式启用、随机 loopback 端口与 Bearer 令牌。脚本 `/reflect` 与标准 MCP `/mcp` 共用主线程反射执行器。接入后的操作不依赖 Editor MCP、Rider 或动态 C# 编译器。
 
+- Unity 菜单 **Tools → ClientMCP → Connection Status** 提供当前 Editor Play 实例的启停与状态查看：监听入口、连接文件位置、分类请求计数、最近 16 条已完成请求的说明和结果；只统计已通过认证的实际访问，不显示令牌，不推断 AI 持续在线。外部 `/health` 与 `clientmcp_status` 同步提供 `connection` 快照。反射操作新增必填 `description`，Unity Console 记录执行说明和成功或失败，不自动展开参数或返回值；Python 方法省略时提供通用说明，原始 JSON / MCP 调用需要显式填写。
+
 - 已使用 Unity 6000.5.9f1 创建 `Project/` 开发验证工程，并生成 `DiagnosticsSandbox` 场景。
-- UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.2`；最低版本声明为 Unity 2022.3，依赖 Unity 官方 Newtonsoft Json。开发工程仍使用 Unity 6000.5.9f1。
+- UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.3`；最低版本声明为 Unity 2022.3，依赖 Unity 官方 Newtonsoft Json。开发工程仍使用 Unity 6000.5.9f1。
 - 整个工程与文档已发布至 [Counull/ClientMCP](https://github.com/Counull/ClientMCP) 公开仓库，默认分支为 `main`。采用 MIT 许可证。
 - 已用独立消费工程验证 HTTPS Git URL 子目录安装，无需手动复制包或源码。
 - Git URL 安装、版本标签及源码维护方式见 [工程结构与 UPM 发布流程](architecture-and-release.md)。
@@ -35,6 +37,7 @@
 
 2026-10-17 本轮：
 
+- 连接状态与操作说明：Unity 6000.5 编译及 Windows Mono 独立验证程序构建通过；34 项真实 HTTP/MCP 检查覆盖分类计数、并发、失败标记、16 条历史上限、说明必填与边界、令牌脱敏和格式处理，Player 实际日志确认执行前说明及成功或失败。原有 22 项端点/超时检查通过，Python 客户端 17 项契约测试通过。Unity 2022.3 当前消费工程已加载并打开状态窗口，未进入 Play 时状态归零；本轮未以截图作为窗口视觉验收。
 - Unity 6000.5.9f1 编译和 19 项 Editor 内反射检查通过，正常退出码 0；覆盖私有继承字段、无隐式 getter、构造、重载、句柄、结构副本回写及异常根因。这是 Editor API 检查，不等同于 Editor Play 的外部接入验收。
 - Windows x64 / Mono / 非 Development 验证程序构建通过，正常退出码 0。该通用夹具以无图形模式运行，22 项真实 HTTP / MCP 端点检查通过，未作为视觉或性能验收。
 - 真实 Player 验证了持续增长的帧号、运行对象字段写入读回、构造新对象并通过引用写回、方法调用、静态属性恢复、认证与来源检查，以及 MCP 初始化、工具发现和调用。

@@ -16,8 +16,8 @@
 
 ```powershell
 python Tools/clientmcp.py --info <私有连接文件路径> --health
-python Tools/clientmcp.py --info <私有连接文件路径> '{"op":"types","query":"UnityEngine.Time","limit":10}'
-'{"op":"get","type":"UnityEngine.Time","member":"timeScale","kind":"property"}' |
+python Tools/clientmcp.py --info <私有连接文件路径> '{"op":"types","description":"查找 Unity 时间类型","query":"UnityEngine.Time","limit":10}'
+'{"op":"get","description":"检查当前游戏速度","type":"UnityEngine.Time","member":"timeScale","kind":"property"}' |
     python Tools/clientmcp.py --info <私有连接文件路径> -
 ```
 
@@ -37,7 +37,8 @@ print(client.inspect(type="UnityEngine.Time"))
 
 # 默认只读字段；属性需要显式 kind="property"，因为 getter 可能执行代码。
 before = client.get(type="UnityEngine.Time", member="timeScale", kind="property")
-client.set(type="UnityEngine.Time", member="timeScale", kind="property", value=0.75)
+client.set(type="UnityEngine.Time", member="timeScale", kind="property", value=0.75,
+           description="临时降低游戏速度，便于观察运行状态")
 print(client.get(type="UnityEngine.Time", member="timeScale", kind="property"))
 client.set(type="UnityEngine.Time", member="timeScale", kind="property", value=before["value"])
 
@@ -49,6 +50,12 @@ client.release(text)
 ```
 
 以上示例使用通用 Unity/.NET 类型，不要求消费工程提供专用调试接口。`create` 是调用普通 .NET 构造函数；Unity 对象应通过现有 Unity API 的静态方法或已定位实例的方法创建、挂接和销毁。
+
+所有反射请求必须包含字符串 `description`，去首尾空白后长度为 1～200 字符且不含控制字符。它用于解释当前操作，实际执行前会显示在 Unity Console，随后记录成功或失败；状态窗口保留最近完成请求的说明。仅记录主动提供的说明，不自动展开参数或返回值。MCP 的 `clientmcp_reflect` 工具参数同样要求此字段；缺少说明或说明无效时不执行反射。
+
+Python 各反射方法和 `request` 都接受可选的 `description=`。省略时客户端提供“读取成员”等通用中文说明；要说明操作目的，请显式填写。显式传入的空字符串或 `None` 不会被默认说明覆盖，仍交给运行时校验。CLI 原始 JSON 必须自行包含 `description`。
+
+Unity 中可通过 **Tools → ClientMCP → Connection Status** 查看当前 Editor Play 实例的监听入口与请求记录。外部 `health()` 及 MCP `clientmcp_status` 的原结果新增 `connection`，包含分类请求计数、排队数量与最近 16 条请求。健康请求读取快照时会包含自身正在处理的状态；记录不含认证前被拒绝的请求，也不表示有持久在线的 AI 客户端。
 
 所有方法保留服务返回的 `result`，不会把 `get`、`create`、`invoke` 的 `{value, type}` 自动拆开。`value` 中的对象引用格式为 `{"$ref":"o1"}`。实例成员的 `target` 可以传句柄字符串、引用描述，也可以直接传这些方法的返回对象；静态成员传 `type=`。参数中的引用直接使用 `{"$ref":"o1"}`，不要把整个返回对象放进 `args`。
 

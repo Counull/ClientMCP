@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
@@ -28,18 +29,33 @@ namespace ClientMcp
     public sealed class ClientMcpRuntime : MonoBehaviour
     {
         const int MaxPendingRequests = 64;
+        const int MaxRecentRequests = 16;
         static ClientMcpRuntime current;
         readonly ConcurrentQueue<PendingRequest> pending = new ConcurrentQueue<PendingRequest>();
         readonly ReflectionSession reflection = new ReflectionSession();
         readonly object lifecycleGate = new object();
+        readonly object connectionGate = new object();
+        readonly Queue<JObject> recentRequests = new Queue<JObject>();
         LoopbackHttpServer server;
         string sessionId;
         string infoPath;
+        string accessToken;
         int requestTimeout;
         int pendingCount;
+        int activeRequests;
+        long mcpRequests;
+        long reflectRequests;
+        long healthRequests;
+        string lastRequestUtc = "";
         volatile bool stopped;
 
         public static bool IsRunning => current != null && !current.stopped;
+
+        /// <summary>
+        /// 主线程读取当前入口的快照；读取本身不算外部连接。只记录主动提供的说明，不复制参数、结果或异常文本。
+        /// HTTP 请求完成后即断开，因此这里只报告监听、请求处理与最近活动，不推断持久在线客户端。
+        /// </summary>
+        public static JObject GetConnectionStatus() => current == null ? EmptyConnectionStatus() : current.ConnectionStatus();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetRuntime()
@@ -100,6 +116,7 @@ namespace ClientMcp
                 var bytes = new byte[32]; random.GetBytes(bytes);
                 token = BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
             }
+            accessToken = token;
             // 一个本机入口同时供脚本和 MCP 使用；令牌只写入用户选择的本地文件，不打印。
             server = new LoopbackHttpServer(options.Port, token, HandleHttp);
             File.WriteAllText(infoPath, new JObject
@@ -111,16 +128,174 @@ namespace ClientMcp
 
         HttpReply HandleHttp(string method, string path, JObject body)
         {
-            if (path == "/mcp") return McpEndpoint.Handle(method, body, EnqueueAndWait);
-            if (path == "/health" && method == "GET") return HttpReply.Json(200, Success(EnqueueAndWait(new JObject { ["op"] = "status" })));
+            // 仅通过 HTTP 认证且报文解析完成的请求才会进入这里；Editor 刷新窗口不会增加计数。
+            bool tracked = RecordRequestStarted(path);
+            bool success = false;
+            try
+            {
+                HttpReply reply = DispatchHttp(method, path, body);
+                success = reply.Status < 400 && reply.Body?["error"] == null &&
+                    (bool?)reply.Body?["ok"] != false && (bool?)reply.Body?["result"]?["isError"] != true;
+                return reply;
+            }
+            finally
+            {
+                if (tracked) RecordRequestCompleted(path, DescribeOperation(path, body), RequestDescription(path, body), success);
+            }
+        }
+
+        HttpReply DispatchHttp(string method, string path, JObject body)
+        {
+            if (path == "/mcp") return McpEndpoint.Handle(method, body, command => EnqueueAndWait(command, path));
+            if (path == "/health" && method == "GET") return HttpReply.Json(200, Success(EnqueueAndWait(new JObject { ["op"] = "status" }, path)));
             if (path != "/reflect") return HttpReply.Error(404, "Unknown endpoint.");
             if (method != "POST") return HttpReply.Error(405, "Use POST.");
-            try { return HttpReply.Json(200, Success(EnqueueAndWait(body))); }
+            try { return HttpReply.Json(200, Success(EnqueueAndWait(body, path))); }
             catch (Exception error) { return HttpReply.Json(200, Failure(error)); }
         }
 
-        JObject EnqueueAndWait(JObject command)
+        bool RecordRequestStarted(string path)
         {
+            lock (connectionGate)
+            {
+                if (stopped) return false;
+                activeRequests++;
+                if (path == "/mcp") mcpRequests++;
+                else if (path == "/reflect") reflectRequests++;
+                else if (path == "/health") healthRequests++;
+                lastRequestUtc = DateTime.UtcNow.ToString("O");
+                return true;
+            }
+        }
+
+        void RecordRequestCompleted(string path, string operation, string description, bool success)
+        {
+            lock (connectionGate)
+            {
+                // 停止后旧接收线程可能仍在退出，不能把旧会话活动写回已经清空的状态。
+                if (stopped) return;
+                activeRequests--;
+                if (recentRequests.Count == MaxRecentRequests) recentRequests.Dequeue();
+                recentRequests.Enqueue(new JObject
+                {
+                    ["timeUtc"] = DateTime.UtcNow.ToString("O"),
+                    ["path"] = path == "/mcp" || path == "/reflect" || path == "/health" ? path : "(unknown)",
+                    ["operation"] = operation, ["description"] = description, ["success"] = success
+                });
+            }
+        }
+
+        static JObject EmptyConnectionStatus() => new JObject
+        {
+            ["isRunning"] = false, ["endpoint"] = "", ["infoPath"] = "", ["activeRequests"] = 0,
+            ["pendingRequests"] = 0, ["mcpRequests"] = 0L, ["reflectRequests"] = 0L,
+            ["healthRequests"] = 0L, ["lastRequestUtc"] = "", ["recentRequests"] = new JArray()
+        };
+
+        JObject ConnectionStatus()
+        {
+            lock (connectionGate)
+            {
+                JObject snapshot = EmptyConnectionStatus();
+                if (stopped) return snapshot;
+                snapshot["isRunning"] = server != null;
+                snapshot["endpoint"] = server?.Endpoint ?? "";
+                snapshot["infoPath"] = infoPath ?? "";
+                snapshot["activeRequests"] = activeRequests;
+                snapshot["pendingRequests"] = Volatile.Read(ref pendingCount);
+                snapshot["mcpRequests"] = mcpRequests;
+                snapshot["reflectRequests"] = reflectRequests;
+                snapshot["healthRequests"] = healthRequests;
+                snapshot["lastRequestUtc"] = lastRequestUtc;
+                var entries = (JArray)snapshot["recentRequests"];
+                foreach (JObject request in recentRequests) entries.Add(request.DeepClone());
+                return snapshot;
+            }
+        }
+
+        static string DescribeOperation(string path, JObject body)
+        {
+            if (path == "/health") return "health";
+            if (path == "/reflect") return DescribeReflection(body);
+            if (path != "/mcp") return "unknown endpoint";
+            string operation = body?["method"]?.Type == JTokenType.String ? (string)body["method"] : "";
+            switch (operation)
+            {
+                case "initialize": case "ping": case "tools/list":
+                case "notifications/initialized": case "notifications/cancelled": return operation;
+                case "tools/call":
+                    var parameters = body["params"] as JObject;
+                    string tool = parameters?["name"]?.Type == JTokenType.String ? (string)parameters["name"] : "";
+                    if (tool == "clientmcp_status") return "tools/call clientmcp_status";
+                    if (tool == "clientmcp_reflect") return "tools/call clientmcp_reflect " + DescribeReflection(parameters["arguments"] as JObject);
+                    return "tools/call unknown tool";
+                default: return "unknown MCP method";
+            }
+        }
+
+        static string DescribeReflection(JObject command)
+        {
+            string operation = command?["op"]?.Type == JTokenType.String ? (string)command["op"] : "";
+            switch (operation)
+            {
+                case "types": case "find": case "inspect": case "get": case "set":
+                case "create": case "invoke": case "release": case "status": break;
+                default: return "unknown reflection operation";
+            }
+            // 摘要只保留固定的协议操作名；类型、成员和参数均来自请求，不复制到活动记录。
+            return operation;
+        }
+
+        string RequestDescription(string path, JObject body)
+        {
+            if (path == "/health") return "检查运行实例状态";
+            if (path == "/reflect") return DisplayDescription(body);
+            if (path != "/mcp") return "拒绝未知接口请求";
+            string operation = body?["method"]?.Type == JTokenType.String ? (string)body["method"] : "";
+            switch (operation)
+            {
+                case "initialize": return "协商 MCP 连接协议";
+                case "ping": return "检查 MCP 接口响应";
+                case "tools/list": return "读取 MCP 工具列表";
+                case "notifications/initialized": return "完成 MCP 初始化";
+                case "notifications/cancelled": return "请求取消 MCP 操作";
+                case "tools/call":
+                    var parameters = body["params"] as JObject;
+                    string tool = parameters?["name"]?.Type == JTokenType.String ? (string)parameters["name"] : "";
+                    if (tool == "clientmcp_status") return "读取运行实例状态";
+                    return tool == "clientmcp_reflect" ? DisplayDescription(parameters["arguments"] as JObject) : "拒绝未知 MCP 工具";
+                default: return "拒绝未知 MCP 方法";
+            }
+        }
+
+        string DisplayDescription(JObject command)
+        {
+            try { return OperationDescription(command); }
+            catch (ArgumentException) { return "拒绝缺失或无效的操作说明"; }
+        }
+
+        string OperationDescription(JObject command)
+        {
+            if (command?["op"]?.Type == JTokenType.String && (string)command["op"] == "status") return "读取运行实例状态";
+            if (command?["description"]?.Type != JTokenType.String)
+                throw new ArgumentException("description 必须提供非空的操作说明字符串。");
+            string description = (string)command["description"];
+            foreach (char character in description)
+                if (char.IsControl(character) || character == '\u2028' || character == '\u2029')
+                    throw new ArgumentException("description 不能包含控制或换行字符。");
+            description = description.Trim();
+            if (description.Length == 0 || description.Length > 200)
+                throw new ArgumentException("description 去除首尾空白后必须为 1 至 200 个字符。");
+            // 说明是客户端主动提供的文本，不从参数生成；会话令牌和 Console 富文本标记不直接显示。
+            string token = accessToken;
+            if (!string.IsNullOrEmpty(token)) description = description.Replace(token, "[REDACTED]");
+            return description.Replace("<", "＜").Replace(">", "＞");
+        }
+
+        JObject EnqueueAndWait(JObject command, string path)
+        {
+            // MCP 和原始 HTTP 共用此校验，不能仅依赖工具 schema；无效说明在执行前即被拒绝。
+            string description = OperationDescription(command);
             PendingRequest request;
             // 入队和停止检查共同受保护，防止关闭清队后又进入新的写请求。
             lock (lifecycleGate)
@@ -131,7 +306,7 @@ namespace ClientMcp
                     Interlocked.Decrement(ref pendingCount);
                     throw new InvalidOperationException("The request queue is full.");
                 }
-                request = new PendingRequest(command);
+                request = new PendingRequest(command, path, description);
                 pending.Enqueue(request);
             }
             try
@@ -159,8 +334,21 @@ namespace ClientMcp
                 Interlocked.Decrement(ref pendingCount);
                 if (!request.TryBegin()) continue;
                 executed++;
-                try { request.Completion.TrySetResult((string)request.Command["op"] == "status" ? Status() : reflection.Execute(request.Command)); }
-                catch (Exception error) { request.Completion.TrySetException(error); }
+                bool isStatus = request.Command["op"]?.Type == JTokenType.String && (string)request.Command["op"] == "status";
+                string logPrefix = "[ClientMCP][" + request.Path + "] ";
+                try
+                {
+                    // 统一在主线程记录；先展示意图，再执行反射，结果不包含参数或返回值。
+                    if (!isStatus) Debug.Log(logPrefix + "开始：" + request.Description);
+                    JObject result = isStatus ? Status() : reflection.Execute(request.Command);
+                    if (!isStatus) Debug.Log(logPrefix + "成功：" + request.Description);
+                    request.Completion.TrySetResult(result);
+                }
+                catch (Exception error)
+                {
+                    if (!isStatus) Debug.LogWarning(logPrefix + "失败：" + request.Description);
+                    request.Completion.TrySetException(error);
+                }
             }
         }
 
@@ -168,7 +356,7 @@ namespace ClientMcp
         {
             ["sessionId"] = sessionId, ["frameCount"] = Time.frameCount,
             ["unityVersion"] = Application.unityVersion, ["isEditor"] = Application.isEditor,
-            ["isPlaying"] = Application.isPlaying
+            ["isPlaying"] = Application.isPlaying, ["connection"] = ConnectionStatus()
         };
 
         internal static JObject Success(JObject result) => new JObject { ["ok"] = true, ["result"] = result };
@@ -188,6 +376,13 @@ namespace ClientMcp
                 if (stopped) return;
                 stopped = true;
             }
+            lock (connectionGate)
+            {
+                activeRequests = 0;
+                mcpRequests = reflectRequests = healthRequests = 0;
+                lastRequestUtc = "";
+                recentRequests.Clear();
+            }
             server?.Dispose();
             while (pending.TryDequeue(out var request))
             {
@@ -195,6 +390,7 @@ namespace ClientMcp
                 request.Completion.TrySetException(new ObjectDisposedException(nameof(ClientMcpRuntime)));
             }
             reflection.Clear();
+            accessToken = null;
             // 只删除属于本会话的凭据文件，避免删掉另一实例后来写入的文件。
             try
             {
@@ -209,8 +405,15 @@ namespace ClientMcp
         {
             int state;
             public readonly JObject Command;
+            public readonly string Path;
+            public readonly string Description;
             public readonly TaskCompletionSource<JObject> Completion = new TaskCompletionSource<JObject>(TaskCreationOptions.RunContinuationsAsynchronously);
-            public PendingRequest(JObject command) { Command = command; }
+            public PendingRequest(JObject command, string path, string description)
+            {
+                Command = command;
+                Path = path;
+                Description = description;
+            }
             public bool TryBegin() => Interlocked.CompareExchange(ref state, 1, 0) == 0;
             public bool CancelBeforeExecution() => Interlocked.CompareExchange(ref state, 2, 0) == 0;
         }

@@ -9,6 +9,7 @@ namespace ClientMcp.Editor
     {
         const string EnabledKey = "ClientMCP.EnableForPlayMode";
         const string MenuPath = "Tools/ClientMCP/Enable For Play Mode";
+        internal static bool EnabledForPlayMode => SessionState.GetBool(EnabledKey, false);
         static RuntimeControls()
         {
             EditorApplication.playModeStateChanged += OnPlayModeChanged;
@@ -17,9 +18,11 @@ namespace ClientMcp.Editor
         }
 
         [MenuItem(MenuPath)]
-        static void Toggle()
+        static void Toggle() => SetEnabled(!EnabledForPlayMode);
+
+        // 菜单和状态窗口共用开关；Play 中立即生效，编辑状态只记录本次 Editor 会话的选择。
+        internal static void SetEnabled(bool enabled)
         {
-            bool enabled = !SessionState.GetBool(EnabledKey, false);
             SessionState.SetBool(EnabledKey, enabled);
             if (!Application.isPlaying) return;
             if (enabled) ClientMcpRuntime.Start();
@@ -27,16 +30,16 @@ namespace ClientMcp.Editor
         }
 
         [MenuItem(MenuPath, true)]
-        static bool Validate() { Menu.SetChecked(MenuPath, SessionState.GetBool(EnabledKey, false)); return true; }
+        static bool Validate() { Menu.SetChecked(MenuPath, EnabledForPlayMode); return true; }
 
         static void ResumeAfterReload()
         {
-            if (Application.isPlaying && SessionState.GetBool(EnabledKey, false)) ClientMcpRuntime.Start();
+            if (Application.isPlaying && EnabledForPlayMode) ClientMcpRuntime.Start();
         }
 
         static void OnPlayModeChanged(PlayModeStateChange state)
         {
-            if (state == PlayModeStateChange.EnteredPlayMode && SessionState.GetBool(EnabledKey, false)) ClientMcpRuntime.Start();
+            if (state == PlayModeStateChange.EnteredPlayMode && EnabledForPlayMode) ClientMcpRuntime.Start();
             if (state == PlayModeStateChange.ExitingPlayMode) ClientMcpRuntime.Stop();
         }
     }

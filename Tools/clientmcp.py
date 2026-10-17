@@ -14,6 +14,20 @@ from http.client import HTTPException
 from urllib import error, parse, request
 
 
+# 区分未提供说明与显式传入 None/空字符串；无效说明由运行时统一拒绝。
+_DESCRIPTION_UNSET = object()
+_OPERATION_DESCRIPTIONS = {
+    "types": "查找类型",
+    "find": "定位运行对象",
+    "inspect": "查看成员元数据",
+    "get": "读取成员",
+    "set": "写入成员",
+    "create": "创建对象",
+    "invoke": "调用方法",
+    "release": "释放对象引用",
+}
+
+
 class ClientMcpError(Exception):
     """调用失败的公共基类，便于脚本统一处理错误。"""
 
@@ -173,70 +187,75 @@ class ClientMcp:
         """读取运行实例、帧数、Unity 版本及 Editor 标识。"""
         return self._send("/health")
 
-    def request(self, op, **kwargs):
-        """发送一个原始反射操作，kwargs 使用协议中的字段名。"""
+    def request(self, op, *, description=_DESCRIPTION_UNSET, **kwargs):
+        """发送反射操作；未指定说明时提供通用中文说明，不展开参数和值。"""
         if not isinstance(op, str) or not op:
             raise ClientMcpProtocolError("op 必须是非空字符串。")
-        return self._send("/reflect", {"op": op, **kwargs})
+        if description is _DESCRIPTION_UNSET:
+            description = _OPERATION_DESCRIPTIONS.get(op, "执行反射操作")
+        return self._send("/reflect", {"op": op, "description": description, **kwargs})
 
-    def types(self, query="", *, offset=0, limit=100):
+    def types(self, query="", *, offset=0, limit=100, description=_DESCRIPTION_UNSET):
         payload = {"offset": offset, "limit": limit}
         if query:
             payload["query"] = query
-        return self.request("types", **payload)
+        return self.request("types", description=description, **payload)
 
-    def find(self, type, *, scope="scene", offset=0, limit=100):
-        return self.request("find", type=type, scope=scope, offset=offset, limit=limit)
+    def find(self, type, *, scope="scene", offset=0, limit=100, description=_DESCRIPTION_UNSET):
+        return self.request("find", type=type, scope=scope, offset=offset, limit=limit,
+                            description=description)
 
-    def inspect(self, target=None, *, type=None):
+    def inspect(self, target=None, *, type=None, description=_DESCRIPTION_UNSET):
         """查看成员元数据；不隐式执行属性 getter。"""
-        return self.request("inspect", **self._receiver(target, type))
+        return self.request("inspect", description=description, **self._receiver(target, type))
 
     def get(
-        self, target=None, member=None, *, type=None, kind="field", declaring_type=None
+        self, target=None, member=None, *, type=None, kind="field", declaring_type=None,
+        description=_DESCRIPTION_UNSET
     ):
         payload = dict(self._receiver(target, type), member=member, kind=kind)
         if declaring_type is not None:
             payload["declaringType"] = declaring_type
-        return self.request("get", **payload)
+        return self.request("get", description=description, **payload)
 
     def set(
         self, target=None, member=None, value=None, *, type=None,
-        kind="field", declaring_type=None
+        kind="field", declaring_type=None, description=_DESCRIPTION_UNSET
     ):
         payload = dict(self._receiver(target, type), member=member, value=value, kind=kind)
         if declaring_type is not None:
             payload["declaringType"] = declaring_type
-        return self.request("set", **payload)
+        return self.request("set", description=description, **payload)
 
-    def create(self, type, args=None, *, parameter_types=None):
+    def create(self, type, args=None, *, parameter_types=None, description=_DESCRIPTION_UNSET):
         payload = {"type": type, "args": [] if args is None else args}
         if parameter_types is not None:
             payload["parameterTypes"] = parameter_types
-        return self.request("create", **payload)
+        return self.request("create", description=description, **payload)
 
     def invoke(
         self, target=None, member=None, args=None, *, type=None,
-        parameter_types=None, declaring_type=None
+        parameter_types=None, declaring_type=None, description=_DESCRIPTION_UNSET
     ):
         payload = dict(self._receiver(target, type), member=member, args=[] if args is None else args)
         if parameter_types is not None:
             payload["parameterTypes"] = parameter_types
         if declaring_type is not None:
             payload["declaringType"] = declaring_type
-        return self.request("invoke", **payload)
+        return self.request("invoke", description=description, **payload)
 
-    def release(self, targets=None, *, all=False):
+    def release(self, targets=None, *, all=False, description=_DESCRIPTION_UNSET):
         """释放桥接层持有的对象引用；不会销毁对象或执行 Dispose。"""
         if all:
             if targets is not None:
                 raise ClientMcpProtocolError("释放全部引用时不要同时传 targets。")
-            return self.request("release", all=True)
+            return self.request("release", all=True, description=description)
         if targets is None:
             raise ClientMcpProtocolError("请指定 targets，或明确传入 all=True。")
         if isinstance(targets, (str, dict)):
             targets = [targets]
-        return self.request("release", targets=[self._target_value(target) for target in targets])
+        return self.request("release", targets=[self._target_value(target) for target in targets],
+                            description=description)
 
 
 def main(argv=None):
@@ -270,6 +289,9 @@ def main(argv=None):
                 raise ClientMcpProtocolError(f"请求不是有效 JSON：{exc}") from exc
             if not isinstance(payload, dict) or "op" not in payload:
                 raise ClientMcpProtocolError("JSON 请求必须是包含 op 的对象。")
+            # CLI 原始 JSON 由调用者负责说明，避免缺少说明时被 helper 默认值掩盖。
+            if "description" not in payload:
+                raise ClientMcpProtocolError("JSON 请求必须包含 description，说明当前操作。")
             result = client.request(**payload)
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         return 0

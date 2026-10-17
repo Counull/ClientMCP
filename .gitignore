@@ -27,3 +27,8 @@ __pycache__/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Standalone relay project
+!Server/**/*.csproj
+Server/**/bin/
+Server/**/obj/

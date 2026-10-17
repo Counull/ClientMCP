@@ -1,4 +1,4 @@
-# 远程诊断连接草案
+# 远程诊断连接
 
 来源：2026-09-30、2026-10-17 项目讨论。本文记录需求、职责与连接设计；实际实现和已执行验证以 [当前状态](status.md) 为准。
 术语见 [CONTEXT.md](../CONTEXT.md)。
@@ -57,7 +57,7 @@
 - 目标是检查和操作开发阶段及已分发的 Unity 客户端；客户端集成 UPM 插件。
 - 客户端主动连接公网上的服务端；开发者通过 Codex 等工具连接服务端的标准 MCP 接口，间接访问目标运行实例。
 - 服务端承担实例发现、访问授权与请求路由；客户端负责执行允许的诊断并返回结果。
-- 本次仅记录方案，不包含服务端实现或部署授权。
+- 2026-10-17 用户已授权实现中转及 UPM 出站连接，并进行本机双实例验证；公网部署仍需另行安排。
 
 ## 如何连接内网客户端
 
@@ -70,22 +70,69 @@ Unity 客户端 <──同一连接下发请求── 公网服务端 ──返�
 
 前提是客户端网络允许访问服务端，且连接仍然有效。代理、防火墙或移动端挂起仍可能中断连接，需要心跳、断线重连和请求超时；已退出或离线的进程不能接受实时诊断。
 
-## 公网最小方案（讨论稿，未实现）
+## 最小连接方案
 
 - 准则：如非必要，勿增实体。只保留当前需求所需内容，不维护备选方案或提前设计扩展。
-- 客户端到服务端：当前建议使用 WSS 双向长连接，承载诊断请求和结果；仍需验证目标 Unity 平台的可用性。
+- 客户端到服务端：使用 WSS 双向长连接，承载诊断请求和结果；`ws` 只允许 loopback 本地验证，不跳过证书验证。
 - 开发者工具到服务端：只提供 HTTPS 上的 MCP Streamable HTTP，不兼容旧版 HTTP+SSE 传输。Streamable HTTP 不等于 HTTP/2，其流式响应仍可使用 SSE。
 - 一个服务端程序承载游戏连接与 MCP 接口；当前不增加独立 Web 后台，开发者先通过 Codex 操作。
 - 读取与显式写入分别处理；诊断启用开关、实例身份、开发者授权和反射访问范围须在实现前明确。运行实例身份与 MCP 会话身份分开管理。
 
 ## 桥接服务端
 
-- 规划放在仓库根目录 `Server/`，与 Unity 工程 `Project/` 并列；使用 C# / ASP.NET Core，命令行启动、常驻运行，独立部署。当前仅为规划，尚未创建。
+- 位于仓库根目录 `Server/`，与 Unity 工程 `Project/` 并列；使用 C# / ASP.NET Core，独立启动和部署。
 - 一个进程提供 `/mcp` 与 `/client` 两个入口，分别接入开发者工具和游戏实例。路径为当前设计名称。
 - 职责保持窄：接入认证、维护在线实例、路由请求与结果，以及处理超时、断线和连接释放。不理解游戏业务，反射执行归客户端，诊断决策归 AI。
 - 最小运行状态为一张在线连接表和一张待回复请求表。`instanceId` 定位目标实例，`requestId` 关联请求与回复；断线时结束受影响的请求，释放连接与等待状态。
-- 一个服务端连接 N 个游戏实例。在线查询通过 MCP 提供实例列表、版本、连接时间及在线数量。需要关联游戏用户时，由游戏接入处提供 `userId`，同一用户可以对应多个运行实例。
+- 一个服务端连接 N 个游戏实例。`clientmcp_instances` 列出在线实例、版本与连接时间；`clientmcp_reflect` 和 `clientmcp_status` 每次显式传 `instanceId`，没有共享的当前选择状态。实例标识沿用 Runtime 的 `sessionId`，与 MCP HTTP 会话分离；重连不重建反射会话，进程或 Runtime 重启则生成新标识。
+- 首版为单运营者模型：客户端接入令牌与开发者令牌独立配置，开发者令牌可操作本服务接入的全部实例。没有逐用户授权、多租户隔离或业务用户身份认证，不把实例名称当作授权依据。
 - 当前不增加历史存储或独立监控后台。极简指职责和组件最少，不省略连接生命周期的必要处理。
+
+### 请求与重连
+
+WebSocket 使用 UTF-8 JSON 对象：客户端先发送 `hello`（`instanceId`、`sessionId`、`name`、`unityVersion`、`isEditor`、`processId`），服务端回复 `welcome`。服务端下发 `request`（`requestId`、`command`），客户端返回 `response`（相同 `requestId`、`body`）；`body` 沿用本机 `/reflect` 的成功或失败封装。客户端定期发送 `ping`，服务端返回 `pong`。
+
+待回复请求绑定具体连接，断线即结束等待，旧连接不能完成新连接的请求。中转不自动重发任何反射写入。HTTP 超时或断线不证明已开始的操作没有生效；重试计划应沿用原 `operationId`，或先查 `result`。连接关闭时取消尚未开始执行的客户端请求，无法中断已经开始的宿主方法。
+
+反射能力等同于当前进程中的受信任代码访问。中转令牌不是业务权限白名单；只为受控诊断启用，令牌通过私有环境配置或宿主参数传递，禁止放在 URL、日志或版本库中。
+
+## 启动与接入
+
+服务端需要 .NET 10 SDK（源码构建）或 ASP.NET Core 10 Runtime（运行发布产物）。仓库根目录使用 PowerShell：
+
+```powershell
+$env:CLIENTMCP_URL = 'http://127.0.0.1:55707'
+$env:CLIENTMCP_DEVELOPER_TOKEN = '<独立随机开发者令牌，至少32字符>'
+$env:CLIENTMCP_CLIENT_TOKEN = '<独立随机客户端令牌，至少32字符>'
+dotnet run --project Server/ClientMcp.Server.csproj
+```
+
+两个令牌必须不同。非 loopback 监听必须配置 HTTPS 和有效的 ASP.NET Core 服务端证书；首版直接由 Kestrel 终止 TLS，不处理转发代理头。出现的 `Origin` 一律拒绝，供原生 MCP 和 Unity 接入使用。默认有 64 个连接、每实例 64 个待回复请求和全局 256 个待回复请求上限；报文限制 1 MiB，JSON 深度限制 64。转发等待 15 秒，注册等待 10 秒，客户端每 10 秒心跳，服务端 45 秒未收到心跳会断开连接。
+
+Unity 宿主在主线程显式启用：
+
+```csharp
+ClientMcpRuntime.Start(new ClientMcpOptions
+{
+    RelayUrl = "wss://<服务主机>/client",
+    RelayToken = privateClientToken,
+    InstanceName = "诊断实例"
+});
+```
+
+已启动的 Runtime 使用 `ClientMcpRuntime.ConnectRelay(url, token, instanceName)`；`DisconnectRelay()` 只关闭出站连接，`Stop()` 结束整个反射会话。网络线程不会访问 Unity 对象；实际命令仍进入原有有界主线程队列。`ClientMcpRuntime.GetConnectionStatus()` 和状态工具中的 `connection.relay` 提供出站连接状态，不显示 URL 或令牌。
+
+Player 带 `--clientmcp` 显式启用时，可以通过私有环境变量 `CLIENTMCP_RELAY_URL`、`CLIENTMCP_RELAY_TOKEN`、`CLIENTMCP_INSTANCE_NAME` 配置出站连接。本机测试使用 `ws://127.0.0.1:55707/client`；未显式启用时，环境配置不会自行开启诊断。
+
+Codex 的 HTTP MCP 地址为 `https://<服务主机>/mcp`，认证头为 `Authorization: Bearer <开发者令牌>`。本机测试地址为 `http://127.0.0.1:55707/mcp`，不需要 stdio 进程。工具流程：
+
+1. 调用 `clientmcp_instances`，读取在线实例的 `instanceId`。
+2. 调用 `clientmcp_status({"instanceId":"..."})` 取得目标 Runtime 会话信息。
+3. 调用 `clientmcp_reflect`，在原有参数中加 `instanceId`；先列已有计划，再进行必要探测或复用。
+
+同一 Runtime 的 loopback 与中转入口共享对象句柄和计划；不同实例的句柄、会话与回执不能混用。MCP HTTP 采用无会话 JSON 响应模式，不发放 `MCP-Session-Id`，GET 返回 405，不提供独立 SSE 流。
+
+传输与路由回归可在仓库根目录运行 `dotnet run --project Server/Tests/ClientMcp.Server.Tests.csproj`。测试链接真实 UPM 出站传输，执行委托使用隔离值；Unity 主线程反射、Player 和公网验证须另外执行，不能以该测试代替。
 
 ## 验收顺序
 

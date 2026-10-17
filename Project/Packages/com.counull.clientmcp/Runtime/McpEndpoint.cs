@@ -13,7 +13,7 @@ namespace ClientMcp
         public static HttpReply Handle(string method, JObject request, Func<JObject, JObject> execute)
         {
             if (method != "POST") return HttpReply.Error(405, "This endpoint uses JSON responses; no standalone SSE stream.");
-            if (request == null || (string)request["jsonrpc"] != "2.0" || request["method"]?.Type != JTokenType.String)
+            if (request == null || request["jsonrpc"]?.Type != JTokenType.String || (string)request["jsonrpc"] != "2.0" || request["method"]?.Type != JTokenType.String)
                 return HttpReply.Json(400, Error(request?["id"], -32600, "Invalid JSON-RPC request."));
             string operation = (string)request["method"];
             JToken id = request["id"];
@@ -26,16 +26,20 @@ namespace ClientMcp
             }
             try
             {
+                if (request["params"] != null && !(request["params"] is JObject))
+                    throw new ArgumentException("params must be an object.");
                 JObject result;
                 switch (operation)
                 {
                     case "initialize":
+                        if (request["params"]?["protocolVersion"] != null && request["params"]["protocolVersion"].Type != JTokenType.String)
+                            throw new ArgumentException("protocolVersion must be a string.");
                         string requested = (string)request["params"]?["protocolVersion"];
                         result = new JObject
                         {
                             ["protocolVersion"] = SupportsVersion(requested) ? requested : ProtocolVersion,
                             ["capabilities"] = new JObject { ["tools"] = new JObject { ["listChanged"] = false } },
-                            ["serverInfo"] = new JObject { ["name"] = "ClientMCP", ["version"] = "0.1.0-preview.4" },
+                            ["serverInfo"] = new JObject { ["name"] = "ClientMCP", ["version"] = "0.1.0-preview.5" },
                             ["instructions"] = "每次反射操作必须提供简短中文 description 说明意图，供运行时活动记录使用。研究反射路径前，先用 op=plan、action=list 查看已有计划；首次 prepare 后复用步骤，通过 run.parameters 传入本次参数。新的操作意图使用新的 operationId；重试沿用原 operationId 或用 result 查询回执。计划缺失或引用失效时只恢复必要步骤和对象入口，不缓存运行值或跨会话句柄。写入或调用前先检查成员元数据。计划仅在主线程同一帧执行有限短时步骤，失败立即停止且不回滚；不得依赖 UnityEditor、动态编译、定时器或阻塞方法。调用宿主已有的非阻塞方法只能表示已发起，回执不代表异步工作已经完成。"
                         };
                         break;
@@ -105,8 +109,8 @@ namespace ClientMcp
             else throw new ArgumentException("Unknown tool: " + name);
             JObject value;
             bool failed = false;
-            try { value = execute(command); failed = ClientMcpRuntime.IsFailedPlanReceipt(value); }
-            catch (Exception error) { failed = true; value = ClientMcpRuntime.Failure(error); }
+            try { value = execute(command); failed = (value?["state"]?.Type == JTokenType.String && (string)value["state"] == "failed") || (bool?)value?["ok"] == false; }
+            catch (Exception error) { failed = true; value = Failure(error); }
             return new JObject
             {
                 ["content"] = new JArray(new JObject { ["type"] = "text", ["text"] = value.ToString(Formatting.None) }),
@@ -114,6 +118,11 @@ namespace ClientMcp
             };
         }
 
+        static JObject Failure(Exception error)
+        {
+            error = error.GetBaseException();
+            return new JObject { ["ok"] = false, ["error"] = new JObject { ["type"] = error.GetType().FullName, ["message"] = error.Message } };
+        }
         static JObject Error(JToken id, int code, string message) => new JObject
         {
             ["jsonrpc"] = "2.0", ["id"] = id?.DeepClone(), ["error"] = new JObject { ["code"] = code, ["message"] = message }

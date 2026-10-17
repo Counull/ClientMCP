@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Tests/**</DefaultItemExcludes>
+    <ClientMcpRuntimeRoot Condition="'$(ClientMcpRuntimeRoot)' == ''">$(MSBuildThisFileDirectory)../Project/Packages/com.counull.clientmcp/Runtime</ClientMcpRuntimeRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <Compile Include="$(ClientMcpRuntimeRoot)/McpEndpoint.cs" Link="Shared/McpEndpoint.cs" />
+    <Compile Include="$(ClientMcpRuntimeRoot)/HttpReply.cs" Link="Shared/HttpReply.cs" />
+    <Compile Remove="Tests/**/*.cs" />
+  </ItemGroup>
+</Project>

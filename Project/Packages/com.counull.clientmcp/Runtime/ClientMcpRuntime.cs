@@ -13,12 +13,15 @@ using Debug = UnityEngine.Debug;
 
 namespace ClientMcp
 {
-    /// <summary>本机接入选项。默认随机端口和令牌；启用入口由宿主或开发者明确调用。</summary>
+    /// <summary>显式接入选项。默认仅开本机入口；中转必须提供地址和独立的客户端令牌。</summary>
     public sealed class ClientMcpOptions
     {
         public int Port;
         public string InfoPath;
         public int RequestTimeoutMilliseconds = 10000;
+        public string RelayUrl;
+        public string RelayToken;
+        public string InstanceName;
     }
 
     /// <summary>
@@ -36,7 +39,9 @@ namespace ClientMcp
         readonly object lifecycleGate = new object();
         readonly object connectionGate = new object();
         readonly Queue<JObject> recentRequests = new Queue<JObject>();
+        readonly HashSet<string> relayTokens = new HashSet<string>(StringComparer.Ordinal);
         LoopbackHttpServer server;
+        RelayConnection relay;
         ReflectionPlanSession plans;
         string sessionId;
         string infoPath;
@@ -71,7 +76,13 @@ namespace ClientMcp
         {
             string[] args = Environment.GetCommandLineArgs();
             if (Array.IndexOf(args, "--clientmcp") < 0) return;
-            var options = new ClientMcpOptions();
+            // 只有显式 --clientmcp 才读取中转配置；普通发行包不会因环境变量自动开放诊断。
+            var options = new ClientMcpOptions
+            {
+                RelayUrl = Environment.GetEnvironmentVariable("CLIENTMCP_RELAY_URL"),
+                RelayToken = Environment.GetEnvironmentVariable("CLIENTMCP_RELAY_TOKEN"),
+                InstanceName = Environment.GetEnvironmentVariable("CLIENTMCP_INSTANCE_NAME")
+            };
             for (int index = 0; index < args.Length - 1; index++)
             {
                 if (args[index] == "--clientmcp-info") options.InfoPath = args[index + 1];
@@ -93,7 +104,48 @@ namespace ClientMcp
             var runtime = host.AddComponent<ClientMcpRuntime>();
             current = runtime;
             try { runtime.Initialize(options); }
-            catch { Destroy(host); current = null; throw; }
+            catch { runtime.Shutdown(); Destroy(host); current = null; throw; }
+        }
+
+        /// <summary>在已启动的 Runtime 主线程显式连接中转；复用当前反射会话及计划。</summary>
+        public static void ConnectRelay(string url, string token, string instanceName = null)
+        {
+            if (!IsRunning) throw new InvalidOperationException("Start ClientMCP before connecting a relay.");
+            current.ConnectRelayCore(url, token, instanceName);
+        }
+
+        /// <summary>仅断开中转；本机入口及当前反射会话继续运行。必须在主线程调用。</summary>
+        public static void DisconnectRelay()
+        {
+            if (current == null) return;
+            RelayConnection previous;
+            lock (current.connectionGate) { previous = current.relay; current.relay = null; }
+            previous?.Dispose();
+        }
+
+        void ConnectRelayCore(string url, string token, string instanceName)
+        {
+            // 注册数据先在主线程取值；后台运输层只处理这个不可变快照。
+            var hello = new JObject
+            {
+                ["kind"] = "hello", ["instanceId"] = sessionId, ["sessionId"] = sessionId,
+                ["name"] = string.IsNullOrWhiteSpace(instanceName) ? Application.productName : instanceName.Trim(),
+                ["unityVersion"] = Application.unityVersion, ["isEditor"] = Application.isEditor,
+                ["processId"] = Process.GetCurrentProcess().Id
+            };
+            if (((string)hello["name"]).Length > 200) throw new ArgumentException("Relay instance name exceeds 200 characters.", nameof(instanceName));
+            foreach (char character in (string)hello["name"])
+                if (char.IsControl(character)) throw new ArgumentException("Relay instance name contains control characters.", nameof(instanceName));
+            // 先构造并校验新连接，配置无效时保留旧连接。令牌不写入连接文件或状态。
+            RelayConnection previous;
+            lock (connectionGate)
+            {
+                var next = new RelayConnection(url, token, hello, (command, cancellation) => HandleHttp("POST", "/reflect", command, cancellation).Body);
+                relayTokens.Add(token);
+                previous = relay;
+                relay = next;
+            }
+            previous?.Dispose();
         }
 
         public static void Stop()
@@ -126,16 +178,19 @@ namespace ClientMcp
                 ["endpoint"] = server.Endpoint, ["token"] = token, ["sessionId"] = sessionId, ["processId"] = pid
             }.ToString(Formatting.Indented), new System.Text.UTF8Encoding(false));
             Debug.Log("CLIENTMCP_READY endpoint=" + server.Endpoint + " info=" + infoPath);
+            if (!string.IsNullOrWhiteSpace(options.RelayUrl)) ConnectRelayCore(options.RelayUrl, options.RelayToken, options.InstanceName);
         }
 
-        HttpReply HandleHttp(string method, string path, JObject body)
+        HttpReply HandleHttp(string method, string path, JObject body) => HandleHttp(method, path, body, CancellationToken.None);
+
+        HttpReply HandleHttp(string method, string path, JObject body, CancellationToken cancellation)
         {
             // 仅通过 HTTP 认证且报文解析完成的请求才会进入这里；Editor 刷新窗口不会增加计数。
             bool tracked = RecordRequestStarted(path);
             bool success = false;
             try
             {
-                HttpReply reply = DispatchHttp(method, path, body);
+                HttpReply reply = DispatchHttp(method, path, body, cancellation);
                 success = reply.Status < 400 && reply.Body?["error"] == null &&
                     (bool?)reply.Body?["ok"] != false && (bool?)reply.Body?["result"]?["isError"] != true &&
                     !IsFailedPlanReceipt(reply.Body?["result"] as JObject);
@@ -147,13 +202,13 @@ namespace ClientMcp
             }
         }
 
-        HttpReply DispatchHttp(string method, string path, JObject body)
+        HttpReply DispatchHttp(string method, string path, JObject body, CancellationToken cancellation)
         {
-            if (path == "/mcp") return McpEndpoint.Handle(method, body, command => EnqueueAndWait(command, path));
-            if (path == "/health" && method == "GET") return HttpReply.Json(200, Success(EnqueueAndWait(new JObject { ["op"] = "status" }, path)));
+            if (path == "/mcp") return McpEndpoint.Handle(method, body, command => EnqueueAndWait(command, path, cancellation));
+            if (path == "/health" && method == "GET") return HttpReply.Json(200, Success(EnqueueAndWait(new JObject { ["op"] = "status" }, path, cancellation)));
             if (path != "/reflect") return HttpReply.Error(404, "Unknown endpoint.");
             if (method != "POST") return HttpReply.Error(405, "Use POST.");
-            try { return HttpReply.Json(200, Success(EnqueueAndWait(body, path))); }
+            try { return HttpReply.Json(200, Success(EnqueueAndWait(body, path, cancellation))); }
             catch (Exception error) { return HttpReply.Json(200, Failure(error)); }
         }
 
@@ -192,7 +247,8 @@ namespace ClientMcp
         {
             ["isRunning"] = false, ["endpoint"] = "", ["infoPath"] = "", ["activeRequests"] = 0,
             ["pendingRequests"] = 0, ["mcpRequests"] = 0L, ["reflectRequests"] = 0L,
-            ["healthRequests"] = 0L, ["lastRequestUtc"] = "", ["recentRequests"] = new JArray()
+            ["healthRequests"] = 0L, ["lastRequestUtc"] = "", ["recentRequests"] = new JArray(),
+            ["relay"] = new JObject { ["enabled"] = false, ["state"] = "disabled", ["instanceId"] = "", ["lastConnectedUtc"] = "" }
         };
 
         JObject ConnectionStatus()
@@ -210,6 +266,10 @@ namespace ClientMcp
                 snapshot["reflectRequests"] = reflectRequests;
                 snapshot["healthRequests"] = healthRequests;
                 snapshot["lastRequestUtc"] = lastRequestUtc;
+                snapshot["relay"] = relay?.GetStatus() ?? new JObject
+                {
+                    ["enabled"] = false, ["state"] = "disabled", ["instanceId"] = sessionId ?? "", ["lastConnectedUtc"] = ""
+                };
                 var entries = (JArray)snapshot["recentRequests"];
                 foreach (JObject request in recentRequests) entries.Add(request.DeepClone());
                 return snapshot;
@@ -299,10 +359,12 @@ namespace ClientMcp
             // 说明是客户端主动提供的文本，不从参数生成；会话令牌和 Console 富文本标记不直接显示。
             string token = accessToken;
             if (!string.IsNullOrEmpty(token)) description = description.Replace(token, "[REDACTED]");
+            lock (connectionGate)
+                foreach (string secret in relayTokens) description = description.Replace(secret, "[REDACTED]");
             return description.Replace("<", "＜").Replace(">", "＞");
         }
 
-        JObject EnqueueAndWait(JObject command, string path)
+        JObject EnqueueAndWait(JObject command, string path, CancellationToken cancellation)
         {
             // MCP 和原始 HTTP 共用此校验，不能仅依赖工具 schema；无效说明在执行前即被拒绝。
             string description = OperationDescription(command);
@@ -311,17 +373,18 @@ namespace ClientMcp
             lock (lifecycleGate)
             {
                 if (stopped) throw new ObjectDisposedException(nameof(ClientMcpRuntime));
+                cancellation.ThrowIfCancellationRequested();
                 if (Interlocked.Increment(ref pendingCount) > MaxPendingRequests)
                 {
                     Interlocked.Decrement(ref pendingCount);
                     throw new InvalidOperationException("The request queue is full.");
                 }
-                request = new PendingRequest(command, path, description);
+                request = new PendingRequest(command, path, description, cancellation);
                 pending.Enqueue(request);
             }
             try
             {
-                if (!request.Completion.Task.Wait(requestTimeout))
+                if (!request.Completion.Task.Wait(requestTimeout, cancellation))
                 {
                     bool cancelled = request.CancelBeforeExecution();
                     throw new TimeoutException(cancelled ? "Timed out before execution; the command was cancelled." :
@@ -329,7 +392,14 @@ namespace ClientMcp
                 }
                 return request.Completion.Task.GetAwaiter().GetResult();
             }
+            catch (OperationCanceledException)
+            {
+                bool cancelled = request.CancelBeforeExecution();
+                throw new OperationCanceledException(cancelled ? "Relay disconnected before execution; the command was cancelled." :
+                    "Relay disconnected after execution started; the command may have taken effect. Query the operation receipt before retrying.", cancellation);
+            }
             catch (AggregateException error) { throw error.GetBaseException(); }
+            finally { request.Cancellation.Dispose(); }
         }
 
         void Update()
@@ -412,6 +482,8 @@ namespace ClientMcp
                 lastRequestUtc = "";
                 recentRequests.Clear();
             }
+            relay?.Dispose();
+            relay = null;
             server?.Dispose();
             while (pending.TryDequeue(out var request))
             {
@@ -421,6 +493,7 @@ namespace ClientMcp
             plans?.Clear();
             reflection.Clear();
             accessToken = null;
+            lock (connectionGate) relayTokens.Clear();
             // 只删除属于本会话的凭据文件，避免删掉另一实例后来写入的文件。
             try
             {
@@ -437,15 +510,24 @@ namespace ClientMcp
             public readonly JObject Command;
             public readonly string Path;
             public readonly string Description;
+            readonly CancellationToken cancellation;
+            public readonly CancellationTokenRegistration Cancellation;
             public readonly TaskCompletionSource<JObject> Completion = new TaskCompletionSource<JObject>(TaskCreationOptions.RunContinuationsAsynchronously);
-            public PendingRequest(JObject command, string path, string description)
+            public PendingRequest(JObject command, string path, string description, CancellationToken cancellation)
             {
                 Command = command;
                 Path = path;
                 Description = description;
+                this.cancellation = cancellation;
+                // 与 TryBegin 竞争同一个状态，断线先赢时本帧也不能开始执行排队操作。
+                Cancellation = cancellation.Register(() => CancelBeforeExecution());
             }
-            public bool TryBegin() => Interlocked.CompareExchange(ref state, 1, 0) == 0;
-            public bool CancelBeforeExecution() => Interlocked.CompareExchange(ref state, 2, 0) == 0;
+            public bool TryBegin()
+            {
+                if (cancellation.IsCancellationRequested) { CancelBeforeExecution(); return false; }
+                return Interlocked.CompareExchange(ref state, 1, 0) == 0;
+            }
+            public bool CancelBeforeExecution() => Interlocked.CompareExchange(ref state, 2, 0) != 1;
         }
     }
 }

@@ -1,6 +1,6 @@
 # ClientMCP UPM 包
 
-版本：`0.1.0-preview.4`。提供通用反射元操作、可复用操作计划与显式启用的本机接入，不包含消费项目业务语义。
+版本：`0.1.0-preview.5`。提供通用反射元操作、可复用操作计划与显式启用的本机和中转接入，不包含消费项目业务语义。
 
 - 最低版本声明：Unity **2022.3**；开发工程：Unity **6000.5.9f1**。已执行的验证以仓库 `doc/status.md` 为准。
 - 本包作为源码包交付，由宿主 Unity 工程编译；无需预先生成 DLL。
@@ -18,6 +18,14 @@ Editor：勾选 **Tools → ClientMCP → Enable For Play Mode** 后进入 Play�
 Player：启动时传入 `--clientmcp --clientmcp-info <本地连接文件.json>`。默认只绑定 `127.0.0.1` 的随机端口，令牌随机生成并写入本地连接文件；不显式启用时不监听。
 
 宿主也可在主线程调用 `ClientMcpRuntime.Start(new ClientMcpOptions { InfoPath = ... })`，结束时调用 `ClientMcpRuntime.Stop()`。没有指定文件时，连接信息写到系统临时目录的 `clientmcp-<进程ID>.json`。
+
+### 中转连接
+
+宿主可在 `ClientMcpOptions` 中提供 `RelayUrl`（`wss://<主机>/client`）、`RelayToken`、`InstanceName`，或在 Runtime 已启动后调用 `ClientMcpRuntime.ConnectRelay(url, token, instanceName)`。`DisconnectRelay()` 只断开中转，不清理当前反射会话；`Stop()` 结束整个 Runtime。`ws` 只允许 loopback 本地验证，不忽略 TLS 证书错误。
+
+Player 显式带 `--clientmcp` 时，也可从私有环境变量 `CLIENTMCP_RELAY_URL`、`CLIENTMCP_RELAY_TOKEN`、`CLIENTMCP_INSTANCE_NAME` 读取中转配置；令牌不要放入命令行、URL 或版本库。中转断线自动重连，但不自动重发反射请求；同一 Runtime 重连后计划仍然有效。
+
+服务端启动及 MCP 实例选择见仓库[连接说明](https://github.com/Counull/ClientMCP/blob/main/doc/remote-diagnostics.md)。
 
 连接文件是凭据，不应提交或公开。`/reflect` 接收外部脚本的通用 JSON 请求；`/mcp` 支持 MCP 初始化与工具发现/调用；两者均要求 Bearer 令牌。完整脚本客户端与调用说明位于仓库的 `Tools/`。
 

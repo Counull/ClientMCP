@@ -1,3 +1,3 @@
 using System.Reflection;
 
-[assembly: AssemblyDescription("ClientMCP runtime package scaffold. Diagnostic capabilities are not implemented yet.")]
+[assembly: AssemblyDescription("ClientMCP authenticated runtime reflection primitives.")]

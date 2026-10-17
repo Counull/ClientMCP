@@ -1,0 +1,7 @@
+{
+  "name": "ClientMcp.Editor",
+  "rootNamespace": "ClientMcp.Editor",
+  "references": [ "ClientMcp.Runtime" ],
+  "includePlatforms": [ "Editor" ],
+  "autoReferenced": true
+}

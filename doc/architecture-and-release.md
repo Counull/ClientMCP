@@ -4,7 +4,7 @@
 
 一个 GitHub 仓库维护完整工程历史：Unity 验证场景、项目配置、UPM 源码、设计文档一起提交。UPM 消费者只安装包目录；不需要另建发布仓库，也不需要复制源码到发布分支。
 
-语言为 C#，开发工程使用 Unity 6000.5.9f1，插件以嵌入式 UPM 包位于 `Project/Packages/com.counull.clientmcp/`。独立 .NET 桥接程序、MCP SDK、网络协议、反射查询范围仍待设计，不在初始化阶段预选。
+语言为 C#，开发工程使用 Unity 6000.5.9f1，插件以嵌入式 UPM 包位于 `Project/Packages/com.counull.clientmcp/`，包声明最低 Unity 2022.3。首版本机反射接入直接由 Runtime 承载，脚本与 MCP 共用同一个执行器；公网桥接仍为未实现方案，见 [运行时能力与连接方案](remote-diagnostics.md)。
 
 ![单仓库开发与发布结构](images/repository-upm.svg)
 

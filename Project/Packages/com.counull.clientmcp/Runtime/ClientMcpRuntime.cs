@@ -37,6 +37,7 @@ namespace ClientMcp
         readonly object connectionGate = new object();
         readonly Queue<JObject> recentRequests = new Queue<JObject>();
         LoopbackHttpServer server;
+        ReflectionPlanSession plans;
         string sessionId;
         string infoPath;
         string accessToken;
@@ -106,6 +107,7 @@ namespace ClientMcp
         void Initialize(ClientMcpOptions options)
         {
             sessionId = Guid.NewGuid().ToString("N");
+            plans = new ReflectionPlanSession(reflection, sessionId);
             requestTimeout = options.RequestTimeoutMilliseconds;
             int pid = Process.GetCurrentProcess().Id;
             infoPath = Path.GetFullPath(options.InfoPath ?? Path.Combine(Path.GetTempPath(), "clientmcp-" + pid + ".json"));
@@ -135,7 +137,8 @@ namespace ClientMcp
             {
                 HttpReply reply = DispatchHttp(method, path, body);
                 success = reply.Status < 400 && reply.Body?["error"] == null &&
-                    (bool?)reply.Body?["ok"] != false && (bool?)reply.Body?["result"]?["isError"] != true;
+                    (bool?)reply.Body?["ok"] != false && (bool?)reply.Body?["result"]?["isError"] != true &&
+                    !IsFailedPlanReceipt(reply.Body?["result"] as JObject);
                 return reply;
             }
             finally
@@ -240,6 +243,13 @@ namespace ClientMcp
             {
                 case "types": case "find": case "inspect": case "get": case "set":
                 case "create": case "invoke": case "release": case "status": break;
+                case "plan":
+                    string action = command["action"]?.Type == JTokenType.String ? (string)command["action"] : "";
+                    switch (action)
+                    {
+                        case "prepare": case "run": case "result": case "list": case "release": return "plan " + action;
+                        default: return "plan unknown action";
+                    }
                 default: return "unknown reflection operation";
             }
             // 摘要只保留固定的协议操作名；类型、成员和参数均来自请求，不复制到活动记录。
@@ -340,8 +350,25 @@ namespace ClientMcp
                 {
                     // 统一在主线程记录；先展示意图，再执行反射，结果不包含参数或返回值。
                     if (!isStatus) Debug.Log(logPrefix + "开始：" + request.Description);
-                    JObject result = isStatus ? Status() : reflection.Execute(request.Command);
-                    if (!isStatus) Debug.Log(logPrefix + "成功：" + request.Description);
+                    JObject result;
+                    if (isStatus) result = Status();
+                    else if (request.Command["op"]?.Type == JTokenType.String && (string)request.Command["op"] == "plan")
+                    {
+                        // 计划会保存说明用于复用与回执；只覆盖其说明，普通反射和计划参数的原值都不改写。
+                        var command = (JObject)request.Command.DeepClone();
+                        command["description"] = request.Description;
+                        result = plans.Execute(command);
+                    }
+                    else result = reflection.Execute(request.Command);
+                    if (!isStatus)
+                    {
+                        string action = request.Command["action"]?.Type == JTokenType.String ? (string)request.Command["action"] : "";
+                        bool originalReceipt = request.Command["op"]?.Type == JTokenType.String && (string)request.Command["op"] == "plan" &&
+                            (action == "run" || action == "result") && result?["cacheHit"]?.Type == JTokenType.Boolean && (bool)result["cacheHit"];
+                        string receiptNotice = originalReceipt ? "（返回原回执，未重复执行）" : "";
+                        if (IsFailedPlanReceipt(result)) Debug.LogWarning(logPrefix + "失败" + receiptNotice + "：" + request.Description);
+                        else Debug.Log(logPrefix + "成功" + receiptNotice + "：" + request.Description);
+                    }
                     request.Completion.TrySetResult(result);
                 }
                 catch (Exception error)
@@ -360,6 +387,8 @@ namespace ClientMcp
         };
 
         internal static JObject Success(JObject result) => new JObject { ["ok"] = true, ["result"] = result };
+        // 已完成的失败回执仍要完整返回，不能抛异常丢掉失败前的步骤结果或重复请求信息。
+        internal static bool IsFailedPlanReceipt(JObject result) => result?["state"]?.Type == JTokenType.String && (string)result["state"] == "failed";
         internal static JObject Failure(Exception error)
         {
             error = error.GetBaseException();
@@ -389,6 +418,7 @@ namespace ClientMcp
                 Interlocked.Decrement(ref pendingCount);
                 request.Completion.TrySetException(new ObjectDisposedException(nameof(ClientMcpRuntime)));
             }
+            plans?.Clear();
             reflection.Clear();
             accessToken = null;
             // 只删除属于本会话的凭据文件，避免删掉另一实例后来写入的文件。

@@ -25,6 +25,14 @@ _OPERATION_DESCRIPTIONS = {
     "create": "创建对象",
     "invoke": "调用方法",
     "release": "释放对象引用",
+    "plan": "操作缓存反射计划",
+}
+_PLAN_ACTION_DESCRIPTIONS = {
+    "prepare": "准备缓存反射计划",
+    "run": "执行缓存反射计划",
+    "result": "查询反射计划执行结果",
+    "list": "列出缓存反射计划",
+    "release": "释放缓存反射计划",
 }
 
 
@@ -193,6 +201,8 @@ class ClientMcp:
             raise ClientMcpProtocolError("op 必须是非空字符串。")
         if description is _DESCRIPTION_UNSET:
             description = _OPERATION_DESCRIPTIONS.get(op, "执行反射操作")
+            if op == "plan" and isinstance(kwargs.get("action"), str):
+                description = _PLAN_ACTION_DESCRIPTIONS.get(kwargs["action"], description)
         return self._send("/reflect", {"op": op, "description": description, **kwargs})
 
     def types(self, query="", *, offset=0, limit=100, description=_DESCRIPTION_UNSET):
@@ -257,11 +267,39 @@ class ClientMcp:
         return self.request("release", targets=[self._target_value(target) for target in targets],
                             description=description)
 
+    def prepare_plan(self, plan_id, steps, *, description=_DESCRIPTION_UNSET):
+        """提交计划定义；保留参数与步骤引用，由运行时验证并缓存。"""
+        return self.request("plan", action="prepare", planId=plan_id, steps=steps,
+                            description=description)
+
+    def run_plan(
+        self, plan_id, operation_id, *, session_id, parameters=None,
+        description=_DESCRIPTION_UNSET
+    ):
+        """执行调用方明确编号的操作；不自动重试，失败回执也原样返回。"""
+        payload = {"planId": plan_id, "operationId": operation_id, "sessionId": session_id}
+        if parameters is not None:
+            payload["parameters"] = parameters
+        return self.request("plan", action="run", description=description, **payload)
+
+    def plan_result(self, operation_id, *, session_id, description=_DESCRIPTION_UNSET):
+        """查询原操作回执；会话失效时不自动换编号或重新执行。"""
+        return self.request("plan", action="result", operationId=operation_id,
+                            sessionId=session_id, description=description)
+
+    def list_plans(self, *, description=_DESCRIPTION_UNSET):
+        return self.request("plan", action="list", description=description)
+
+    def release_plan(self, plan_id, *, session_id, description=_DESCRIPTION_UNSET):
+        """释放指定会话的计划；不在客户端维护计划或运行对象缓存。"""
+        return self.request("plan", action="release", planId=plan_id,
+                            sessionId=session_id, description=description)
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="向明确指定的本机 Unity 运行实例发送通用反射请求。",
-        epilog="操作：types、find、inspect、get、set、create、invoke、release。JSON 参数 '-' 表示从标准输入读取。",
+        epilog="操作：types、find、inspect、get、set、create、invoke、release、plan。JSON 参数 '-' 表示从标准输入读取。",
     )
     parser.add_argument("payload", nargs="?", help="JSON 请求对象，或 '-' 从标准输入读取")
     parser.add_argument("--info", help="运行实例写出的连接文件路径")

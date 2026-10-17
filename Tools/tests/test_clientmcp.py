@@ -56,6 +56,8 @@ class TestClientMcp(unittest.TestCase):
                 if not self.authorized():
                     return
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                with self.server.requests_lock:
+                    self.server.received_requests.append(payload)
                 if payload["op"] == "remote-error":
                     self.send_json(400, {"ok": False, "error": {
                         "type": "System.InvalidOperationException", "message": "明确的执行错误",
@@ -69,11 +71,35 @@ class TestClientMcp(unittest.TestCase):
                 elif payload["op"] == "slow":
                     time.sleep(0.15)
                     self.send_json(200, {"ok": True, "result": {}})
+                elif (payload["op"] == "plan" and payload.get("action") in ("run", "result")
+                      and payload.get("operationId") in self.server.plan_receipts):
+                    receipt = dict(self.server.plan_receipts[payload["operationId"]],
+                                   cacheHit=payload["action"] == "result")
+                    self.send_json(200, {"ok": True, "result": receipt})
+                elif (payload["op"] == "plan" and payload.get("action") == "run"
+                      and payload.get("operationId") == "slow-operation"):
+                    time.sleep(0.15)
+                    self.send_json(200, {"ok": True, "result": {"state": "completed", "cacheHit": False}})
                 else:
                     self.send_json(200, {"ok": True, "result": {"received": payload, "path": self.path}})
 
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         cls.server.daemon_threads = True
+        cls.server.requests_lock = threading.Lock()
+        cls.server.received_requests = []
+        cls.server.plan_receipts = {
+            "failed-operation": {
+                "sessionId": "session-test", "planId": "sample-plan",
+                "operationId": "failed-operation", "state": "failed",
+                "completedSteps": 1, "results": [{"value": 23}], "failedStep": 1,
+                "error": {"type": "System.InvalidOperationException", "message": "第二步执行失败"},
+            },
+            "completed-operation": {
+                "sessionId": "session-test", "planId": "sample-plan",
+                "operationId": "completed-operation", "state": "completed",
+                "completedSteps": 2, "results": [{"value": 23}, {"value": 47}],
+            },
+        }
         cls.server_thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.server_thread.start()
         cls.endpoint = f"http://127.0.0.1:{cls.server.server_port}"
@@ -86,6 +112,14 @@ class TestClientMcp(unittest.TestCase):
 
     def client(self, **kwargs):
         return ClientMcp(endpoint=self.endpoint, token="test-private-token", **kwargs)
+
+    def setUp(self):
+        with self.server.requests_lock:
+            self.server.received_requests.clear()
+
+    def recorded_requests(self):
+        with self.server.requests_lock:
+            return list(self.server.received_requests)
 
     def test_info_file_health_and_explicit_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -161,6 +195,113 @@ class TestClientMcp(unittest.TestCase):
     def test_unknown_operation_uses_generic_description(self):
         received = self.client().request("unknown-operation")["received"]
         self.assertEqual(received["description"], "执行反射操作")
+
+    def test_plan_helpers_send_protocol_fields_and_default_descriptions(self):
+        client = self.client()
+        steps = [{"op": "get", "type": "Example.Type", "member": "Shared"}]
+        calls = (
+            (lambda: client.prepare_plan("sample-plan", steps), {
+                "action": "prepare", "planId": "sample-plan", "steps": steps,
+                "description": "准备缓存反射计划",
+            }),
+            (lambda: client.run_plan("sample-plan", "operation-42", session_id="session-explicit"), {
+                "action": "run", "planId": "sample-plan", "operationId": "operation-42",
+                "sessionId": "session-explicit", "description": "执行缓存反射计划",
+            }),
+            (lambda: client.plan_result("operation-42", session_id="session-explicit"), {
+                "action": "result", "operationId": "operation-42", "sessionId": "session-explicit",
+                "description": "查询反射计划执行结果",
+            }),
+            (lambda: client.list_plans(), {"action": "list", "description": "列出缓存反射计划"}),
+            (lambda: client.release_plan("sample-plan", session_id="session-explicit"), {
+                "action": "release", "planId": "sample-plan", "sessionId": "session-explicit",
+                "description": "释放缓存反射计划",
+            }),
+        )
+        for call, expected in calls:
+            with self.subTest(action=expected["action"]):
+                response = call()
+                self.assertEqual(response["path"], "/reflect")
+                self.assertEqual(response["received"], {"op": "plan", **expected})
+
+    def test_plan_helpers_preserve_explicit_descriptions(self):
+        client = self.client()
+        calls = (
+            lambda text: client.prepare_plan("sample-plan", [], description=text),
+            lambda text: client.run_plan("sample-plan", "operation-42", session_id="session-test",
+                                         description=text),
+            lambda text: client.plan_result("operation-42", session_id="session-test", description=text),
+            lambda text: client.list_plans(description=text),
+            lambda text: client.release_plan("sample-plan", session_id="session-test", description=text),
+        )
+        for index, call in enumerate(calls):
+            for description in ("  明确本次计划操作的用途  ", None, ""):
+                with self.subTest(helper=index, description=description):
+                    self.assertEqual(call(description)["received"]["description"], description)
+
+    def test_plan_step_references_and_parameters_do_not_mutate_inputs(self):
+        client = self.client()
+        steps = [
+            {"op": "get", "type": "Example.Type", "member": "Shared"},
+            {"op": "set", "target": {"$step": 0}, "member": "Value", "value": {"$param": "value"}},
+            {"op": "invoke", "target": {"$step": 0}, "member": "Accept", "args": [{"$param": "source"}]},
+        ]
+        parameters = {"value": {"x": 9, "text": "原始参数"}, "source": {"$ref": "o7"}}
+        original_steps = json.loads(json.dumps(steps))
+        original_parameters = json.loads(json.dumps(parameters))
+        prepared = client.prepare_plan("sample-plan", steps)["received"]
+        executed = client.run_plan("sample-plan", "operation-42", session_id="session-test",
+                                   parameters=parameters)["received"]
+        self.assertEqual(prepared["steps"], original_steps)
+        self.assertEqual(executed["parameters"], original_parameters)
+        self.assertEqual(steps, original_steps)
+        self.assertEqual(parameters, original_parameters)
+
+    def test_plan_receipts_preserve_completed_and_failed_states(self):
+        client = self.client()
+        for operation_id, expected in self.server.plan_receipts.items():
+            with self.subTest(operation_id=operation_id):
+                executed = client.run_plan("sample-plan", operation_id, session_id="session-test")
+                queried = client.plan_result(operation_id, session_id="session-test")
+                self.assertEqual(executed, {**expected, "cacheHit": False})
+                self.assertEqual(queried, {**expected, "cacheHit": True})
+        self.assertEqual(len(self.recorded_requests()), 4)
+
+    def test_plan_execution_requires_caller_operation_and_session_ids(self):
+        client = self.client()
+        # 即使连接文件提供会话，也不能悄悄拿它替换调用方应确认的计划会话。
+        client.session_id = "connection-session"
+        calls = (
+            lambda: client.run_plan("sample-plan", session_id="session-test"),
+            lambda: client.run_plan("sample-plan", "operation-42"),
+            lambda: client.plan_result(session_id="session-test"),
+            lambda: client.plan_result("operation-42"),
+            lambda: client.release_plan("sample-plan"),
+        )
+        for index, call in enumerate(calls):
+            with self.subTest(call=index), self.assertRaises(TypeError):
+                call()
+        self.assertEqual(self.recorded_requests(), [])
+
+    def test_plan_timeout_does_not_retry_or_replace_operation_id(self):
+        with self.assertRaises(ClientMcpConnectionError):
+            self.client(timeout=0.03).run_plan("sample-plan", "slow-operation", session_id="session-test")
+        requests = self.recorded_requests()
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["operationId"], "slow-operation")
+        self.assertEqual(requests[0]["action"], "run")
+
+    def test_raw_plan_requests_choose_description_by_action(self):
+        client = self.client()
+        descriptions = {
+            "prepare": "准备缓存反射计划", "run": "执行缓存反射计划",
+            "result": "查询反射计划执行结果", "list": "列出缓存反射计划",
+            "release": "释放缓存反射计划",
+        }
+        for action, description in descriptions.items():
+            with self.subTest(action=action):
+                self.assertEqual(client.request("plan", action=action)["received"]["description"], description)
+        self.assertEqual(client.request("plan", action={})["received"]["description"], "操作缓存反射计划")
 
     def test_empty_type_query_is_omitted(self):
         self.assertNotIn("query", self.client().types()["received"])

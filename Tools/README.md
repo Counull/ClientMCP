@@ -85,6 +85,72 @@ print(client.get("o1", "name", kind="property"))
 | `release(targets=None, all=False)` | `op=release` | 释放一个、多个或所有桥接引用 |
 | `request(op, **kwargs)` | `POST /reflect` | 使用协议字段名发送原始请求 |
 
+## 优先复用已验证的操作计划
+
+首次操作需要探测类型和对象结构时，保存验证过的通用反射步骤。后续相同意图先 `list_plans()` 查找已准备的入口，直接 `run_plan()`；只有缺少计划或会话、引用失效时，才加载本地保存的步骤并做必要恢复，不重复读文档、查源码或临时编译辅助类。具体步骤、参数和本地脚本保存在消费工程；插件只认识反射元操作。
+
+缓存的是步骤，不是当前运行值。计划中不能硬编码 `o1` 或 `{"$ref":"o1"}`；通过本次参数或前序步骤引用对象。游戏重启、换局或场景切换后应重新定位所需对象。计划和回执只在当前 Runtime 会话存在，停止接入或域重载后需要重新准备；客户端可以把步骤 JSON 保存在自己的项目里。
+
+- **再执行一次**：复用计划，提供新的 `operation_id`，真正执行新操作。
+- **请求超时或查询结果**：使用原编号重试，或调用 `plan_result()`；同编号、同计划与同参数返回原回执，不重复写入。不要在结果未知时自动生成新编号。
+- **执行完成**：`state="completed"` 只表示反射步骤已返回；若调用的是宿主已有异步方法，不表示异步任务或演示已经完成。分别说明准备耗时、请求往返和实际业务完成，不能混为一个耗时。
+
+### 准备与执行
+
+以下计划每次创建一个文本对象、追加本次参数并读回长度，不依赖 Editor 或动态 C# 编译器：
+
+```python
+steps = [
+    {"op": "create", "type": "System.Text.StringBuilder", "args": [], "parameterTypes": []},
+    {"op": "invoke", "target": {"$step": 0, "path": ["value"]}, "member": "Append",
+     "args": [{"$param": "text"}], "parameterTypes": ["System.String"]},
+    {"op": "get", "target": {"$step": 0, "path": ["value"]}, "member": "Length", "kind": "property"},
+]
+prepared = client.prepare_plan("append-text-v1", steps, description="构造文本并检查长度")
+session_id = prepared["sessionId"]
+first = client.run_plan("append-text-v1", "operation-1", session_id=session_id,
+                        parameters={"text": "hello"}, description="执行文本构造检查")
+assert first["state"] == "completed"
+print(first["results"][2]["value"])
+
+# 同编号重试只取旧回执，不再创建对象。
+retry = client.run_plan("append-text-v1", "operation-1", session_id=session_id,
+                        parameters={"text": "hello"}, description="确认上次操作结果，避免重复执行")
+assert retry["cacheHit"] is True
+print(client.plan_result("operation-1", session_id=session_id))
+
+# 新编号代表明确的新执行，使用本次参数生成新对象。
+second = client.run_plan("append-text-v1", "operation-2", session_id=session_id,
+                         parameters={"text": "world"}, description="再次执行文本构造检查")
+assert second["state"] == "completed"
+
+# 不再需要查询或重试时显式释放；计划释放本身不释放核心对象句柄。
+client.release([first["results"][0]["value"], second["results"][0]["value"]])
+client.release_plan("append-text-v1", session_id=session_id)
+```
+
+`{"$param":"名称"}` 以本次 `parameters` 的同名值整体替换，参数内容按字面量传递，不再解释其中的占位符。`{"$step":0,"path":["value"]}` 从第 0 步的结果取值；编号从 0 开始，只能引用前序步骤。`path` 可省略，或为字符串与非负整数混合的数组，例如 `["items",0]`，不支持点路径表达式。缺少参数或多传参数都在执行前拒绝。
+
+| Python 方法 | 必需信息 | 用途 |
+| --- | --- | --- |
+| `prepare_plan(plan_id, steps, description=...)` | 计划标识与步骤 | 只校验、复制定义并返回当前 `sessionId`、参数名和步骤数，不执行 |
+| `run_plan(plan_id, operation_id, session_id=..., parameters=...)` | 计划、操作编号与会话 | 一次主线程调用顺序执行，或返回相同编号的原回执 |
+| `plan_result(operation_id, session_id=...)` | 操作编号与会话 | 查询原执行结果，包含失败回执 |
+| `list_plans()` | 当前连接 | 列出已准备计划的说明、参数名和步骤数 |
+| `release_plan(plan_id, session_id=...)` | 计划与会话 | 删除该计划和对应操作回执，结束其去重保证 |
+
+这些方法都支持 `description=`。原始 HTTP 与 MCP 使用同一对象格式：`op="plan"`，`action` 为 `prepare/run/result/list/release`；Python 的下划线字段对应 `planId`、`operationId`、`sessionId`。MCP 仍调用 `clientmcp_reflect`，无需新增业务工具。
+
+### 执行语义与限制
+
+每个计划含 1～64 步，只能组合现有八种反射操作。所有步骤在一次主线程回调中顺序执行，不主动跨帧；失败停止后续步骤，已经发生的修改保留，**不提供事务回滚**。计划不含定时器、循环或动态代码编译；调用阻塞方法仍会卡住主线程，应保持步骤短时有限。
+
+回执包含 `state`、`cacheHit`、`completedSteps` 与 `results`；失败时额外包含从 0 开始的 `failedStep` 和 `error`。失败回执同样缓存，重试不会重做先前成功的步骤。`/reflect` 成功接收计划请求后可用 `ok=true` 返回 `state="failed"`，Python 保留该回执，调用方必须检查 `state`；MCP 对应返回 `isError=true` 并保留结构化回执。Console 与请求历史也标记失败。
+
+同名计划只能以完全相同的步骤与说明重复准备；不同定义必须使用新计划名，或明确释放旧计划。同一 `operationId` 在整个会话内唯一，换计划或参数重用会被拒绝。`run/result/release` 必须提供准备结果中的当前 `sessionId`。
+
+每个会话最多 32 个计划和 128 个操作记录，容量满时拒绝新建，不自动淘汰旧编号。显式释放计划会同时删除其回执，之后原编号不再受到去重保护；请在确认不再重试后释放。计划释放和回执命中都不会销毁对象；结果中的对象句柄仍由原反射会话管理。
+
 `declaring_type` 对应请求中的 `declaringType`，用于明确成员声明类型；`parameter_types` 对应 `parameterTypes`，用于明确方法或构造函数重载。省略 `parameter_types` 时，运行时仅按参数数量选择；有多个同参数数量候选时必须补全类型，不根据 JSON 值猜测重载。实例目标与静态类型只能指定一个。
 
 `release` 仅移除 ClientMCP 持有的引用，不会销毁 Unity 对象，也不会调用 `Dispose`。值类型读取结果是副本；修改副本后需显式写回所属字段或属性。

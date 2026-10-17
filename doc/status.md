@@ -6,7 +6,7 @@
 
 - [首版实现任务 #1](https://github.com/Counull/ClientMCP/issues/1)的功能与首轮验收已完成：通用反射元操作、本机 HTTP / MCP 接入和外部脚本客户端已实现，并在真实消费工程的 Editor Play 与 Windows Mono Player 中完成不暂停的对象注入、自然移动和显示验证。公网桥接与 1:N 路由仍未实现，职责见 [连接方案](remote-diagnostics.md)。
 
-- 包只提供类型与对象定位、成员元数据、字段或属性读写、普通对象构造、实例或静态方法调用、对象句柄与释放，不包含消费项目语义。AI 在外部脚本中组合操作，格式及限制见 [外部脚本说明](../Tools/README.md)。
+- 包提供类型与对象定位、成员元数据、字段或属性读写、普通对象构造、实例或静态方法调用、对象句柄与释放，以及复用这些元操作的通用计划，不包含消费项目语义。格式及限制见 [外部脚本说明](../Tools/README.md)。
 
 - 本项目承接能力演进与通用实现，功能完成并自测后交给用户已授权的消费工程实测；消费工程的私有脚本、代码与测试数据留在消费工程。开发期间建议使用同一份 UPM 包源码，不复制维护两套实现。
 
@@ -16,8 +16,10 @@
 
 - Unity 菜单 **Tools → ClientMCP → Connection Status** 提供当前 Editor Play 实例的启停与状态查看：监听入口、连接文件位置、分类请求计数、最近 16 条已完成请求的说明和结果；只统计已通过认证的实际访问，不显示令牌，不推断 AI 持续在线。外部 `/health` 与 `clientmcp_status` 同步提供 `connection` 快照。反射操作新增必填 `description`，Unity Console 记录执行说明和成功或失败，不自动展开参数或返回值；Python 方法省略时提供通用说明，原始 JSON / MCP 调用需要显式填写。
 
+- 通用操作计划已实现并通过独立验证：`prepare/run/result/list/release` 保存有限步骤、绑定本次参数和前序结果、同帧顺序执行、缓存成功或失败回执；新编号真正再执行，原编号重试不重复写入。缓存限当前会话，容量满时拒绝新建，显式释放会结束去重保证；没有自动回滚或定时调度。AI 优先复用规则同时进入使用说明与 MCP 提示；Console 对缓存回执明确标注“返回原回执，未重复执行”。消费工程的具体业务计划尚待实测。
+
 - 已使用 Unity 6000.5.9f1 创建 `Project/` 开发验证工程，并生成 `DiagnosticsSandbox` 场景。
-- UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.3`；最低版本声明为 Unity 2022.3，依赖 Unity 官方 Newtonsoft Json。开发工程仍使用 Unity 6000.5.9f1。
+- UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.4`；最低版本声明为 Unity 2022.3，依赖 Unity 官方 Newtonsoft Json。开发工程仍使用 Unity 6000.5.9f1。
 - 整个工程与文档已发布至 [Counull/ClientMCP](https://github.com/Counull/ClientMCP) 公开仓库，默认分支为 `main`。采用 MIT 许可证。
 - 已用独立消费工程验证 HTTPS Git URL 子目录安装，无需手动复制包或源码。
 - Git URL 安装、版本标签及源码维护方式见 [工程结构与 UPM 发布流程](architecture-and-release.md)。
@@ -37,6 +39,7 @@
 
 2026-10-17 本轮：
 
+- 操作计划：Unity 6000.5 编译、29 项 Editor 内计划检查和 Windows x64 / Mono / 非 Development 独立程序构建通过；25 项真实 HTTP/MCP 检查确认同帧执行、新编号真实修改、原编号成功及失败去重、会话校验、参数字面值、MCP 失败标记、历史隐私与释放边界。Player 实际日志确认执行说明、失败和缓存回执提示；Python 客户端 24 项 HTTP 契约测试通过。新操作与回执查询分别记录本机往返耗时，不作为 AI 响应速度或业务异步完成时间。通用夹具无图形运行，未作为视觉或消费工程业务验收；证据位于本地 `.scratch/reflection-plans/`。
 - 连接状态与操作说明：Unity 6000.5 编译及 Windows Mono 独立验证程序构建通过；34 项真实 HTTP/MCP 检查覆盖分类计数、并发、失败标记、16 条历史上限、说明必填与边界、令牌脱敏和格式处理，Player 实际日志确认执行前说明及成功或失败。原有 22 项端点/超时检查通过，Python 客户端 17 项契约测试通过。Unity 2022.3 当前消费工程已加载并打开状态窗口，未进入 Play 时状态归零；本轮未以截图作为窗口视觉验收。
 - Unity 6000.5.9f1 编译和 19 项 Editor 内反射检查通过，正常退出码 0；覆盖私有继承字段、无隐式 getter、构造、重载、句柄、结构副本回写及异常根因。这是 Editor API 检查，不等同于 Editor Play 的外部接入验收。
 - Windows x64 / Mono / 非 Development 验证程序构建通过，正常退出码 0。该通用夹具以无图形模式运行，22 项真实 HTTP / MCP 端点检查通过，未作为视觉或性能验收。

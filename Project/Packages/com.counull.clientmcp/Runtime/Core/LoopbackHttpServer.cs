@@ -61,7 +61,7 @@ namespace ClientMcp
                     try { response = ReadAndHandle(stream); }
                     catch (HttpInputException error) { response = HttpReply.Error(error.Status, error.Message); }
                     catch (JsonException) { response = HttpReply.Error(400, "Invalid JSON object."); }
-                    catch (Exception error) { response = HttpReply.Json(500, ClientMcpRuntime.Failure(error)); }
+                    catch (Exception error) { response = HttpReply.Json(500, ClientMcpHost.Failure(error)); }
                     WriteResponse(stream, response);
                 }
             }

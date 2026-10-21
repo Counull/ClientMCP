@@ -39,7 +39,7 @@ namespace ClientMcp
                         {
                             ["protocolVersion"] = SupportsVersion(requested) ? requested : ProtocolVersion,
                             ["capabilities"] = new JObject { ["tools"] = new JObject { ["listChanged"] = false } },
-                            ["serverInfo"] = new JObject { ["name"] = "ClientMCP", ["version"] = "0.1.0-preview.5" },
+                            ["serverInfo"] = new JObject { ["name"] = "ClientMCP", ["version"] = "0.1.0-preview.6" },
                             ["instructions"] = "每次反射操作必须提供简短中文 description 说明意图，供运行时活动记录使用。研究反射路径前，先用 op=plan、action=list 查看已有计划；首次 prepare 后复用步骤，通过 run.parameters 传入本次参数。新的操作意图使用新的 operationId；重试沿用原 operationId 或用 result 查询回执。计划缺失或引用失效时只恢复必要步骤和对象入口，不缓存运行值或跨会话句柄。写入或调用前先检查成员元数据。计划仅在主线程同一帧执行有限短时步骤，失败立即停止且不回滚；不得依赖 UnityEditor、动态编译、定时器或阻塞方法。调用宿主已有的非阻塞方法只能表示已发起，回执不代表异步工作已经完成。"
                         };
                         break;
@@ -89,9 +89,29 @@ namespace ClientMcp
                             ["value"] = new JObject(), ["args"] = new JObject { ["type"] = "array" },
                             ["parameterTypes"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } },
                             ["declaringType"] = new JObject { ["type"] = "string" }, ["query"] = new JObject { ["type"] = "string" },
-                            ["scope"] = new JObject { ["type"] = "string", ["enum"] = new JArray("scene", "loaded") },
+                            ["scope"] = new JObject { ["type"] = "string", ["enum"] = new JArray("scene", "loaded", "roots") },
                             ["offset"] = new JObject { ["type"] = "integer", ["minimum"] = 0 }, ["limit"] = new JObject { ["type"] = "integer", ["minimum"] = 1, ["maximum"] = 200 },
                             ["targets"] = new JObject { ["type"] = "array", ["items"] = new JObject { ["type"] = "string" } }, ["all"] = new JObject { ["type"] = "boolean" }
+                        },
+                        ["additionalProperties"] = false
+                    }
+                },
+                new JObject
+                {
+                    ["name"] = "clientmcp_script",
+                    ["description"] = "受信任 C# 同步脚本；仅宿主显式启用后可用。prepare 编译并缓存，run 使用新 operationId 执行，重试原编号或 result 查回执。脚本非沙箱，超时不能终止已开始执行，不支持 await/async，不自动回滚。Parameters 提供本次参数，Get<T>(句柄) 获取对象，.NET 可用 Root<T>(名称)。",
+                    ["inputSchema"] = new JObject
+                    {
+                        ["type"] = "object", ["required"] = new JArray("action", "description"),
+                        ["properties"] = new JObject
+                        {
+                            ["action"] = new JObject { ["type"] = "string", ["enum"] = new JArray("prepare", "run", "result", "list", "release") },
+                            ["description"] = new JObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 200 },
+                            ["scriptId"] = new JObject { ["type"] = "string" },
+                            ["operationId"] = new JObject { ["type"] = "string" },
+                            ["sessionId"] = new JObject { ["type"] = "string" },
+                            ["code"] = new JObject { ["type"] = "string", ["maxLength"] = 65536 },
+                            ["parameters"] = new JObject { ["type"] = "object", ["additionalProperties"] = true }
                         },
                         ["additionalProperties"] = false
                     }
@@ -106,6 +126,11 @@ namespace ClientMcp
             JObject command;
             if (name == "clientmcp_status") command = new JObject { ["op"] = "status" };
             else if (name == "clientmcp_reflect") command = parameters["arguments"] as JObject ?? throw new ArgumentException("arguments must be an object.");
+            else if (name == "clientmcp_script")
+            {
+                command = (JObject)(parameters["arguments"] as JObject ?? throw new ArgumentException("arguments must be an object.")).DeepClone();
+                command["op"] = "script";
+            }
             else throw new ArgumentException("Unknown tool: " + name);
             JObject value;
             bool failed = false;

@@ -1,7 +1,10 @@
 {
   "name": "ClientMcp.Runtime",
   "rootNamespace": "ClientMcp",
-  "references": [ "Unity.Newtonsoft.Json" ],
+  "references": [
+    "Unity.Newtonsoft.Json",
+    "ClientMcp.Core"
+  ],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

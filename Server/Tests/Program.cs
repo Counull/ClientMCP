@@ -45,7 +45,7 @@ try
     var initialize = await Rpc("initialize", new JObject { ["protocolVersion"] = "2025-11-25" });
     Check((string)initialize["result"]?["serverInfo"]?["name"] == "ClientMCP Relay", "shared MCP initialization");
     var tools = (JArray)(await Rpc("tools/list"))["result"]["tools"];
-    Check(tools.Count == 3, "shared tools plus instance discovery");
+    Check(tools.Count == 4, "shared tools plus instance discovery");
     Check(tools.Take(2).All(tool => ((JArray)tool["inputSchema"]["required"]).Any(value => (string)value == "instanceId")), "explicit instance schema");
     var initialized = await SendRaw("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
     Check(initialized.Status == 202 && initialized.Body.Length == 0, "notification has no JSON-RPC response");
@@ -60,6 +60,8 @@ try
     Check((int)(await Call("clientmcp_status", new JObject()))["error"]["code"] == -32602, "missing instance is rejected");
     var offline = await Call("clientmcp_status", new JObject { ["instanceId"] = "missing" });
     Check((bool)offline["result"]["isError"] && (string)offline["result"]["structuredContent"]["error"]["type"] == "InstanceOffline", "offline result is a tool error");
+    var scriptReply = await Call("clientmcp_script", new JObject { ["instanceId"] = "transport-a", ["action"] = "list", ["description"] = "验证脚本路由" });
+    Check((string)scriptReply["result"]["structuredContent"]["operation"] == "script", "script tool forwards the script operation");
     var error = await Reflect("transport-a", "error");
     Check((bool)error["result"]["isError"] && (string)error["result"]["structuredContent"]["error"]["type"] == "TestFailure", "runtime failure is preserved as tool error");
 
@@ -143,7 +145,7 @@ RelayConnection Connect(string id) => new(socketUrl, ClientToken, Hello(id), (co
     if (value != null) executionCounts.AddOrUpdate(value, 1, (_, count) => count + 1);
     if (operation == "slow") Thread.Sleep(1000);
     if (operation == "error") return new JObject { ["ok"] = false, ["error"] = new JObject { ["type"] = "TestFailure", ["message"] = "Expected test error." } };
-    return new JObject { ["ok"] = true, ["result"] = new JObject { ["instanceId"] = id, ["value"] = value, ["sessionId"] = id } };
+    return new JObject { ["ok"] = true, ["result"] = new JObject { ["instanceId"] = id, ["value"] = value, ["sessionId"] = id, ["operation"] = operation } };
 });
 
 JObject Hello(string id) => new()

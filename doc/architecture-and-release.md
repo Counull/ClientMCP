@@ -4,7 +4,7 @@
 
 一个 GitHub 仓库维护完整工程历史：Unity 验证场景、项目配置、UPM 源码、设计文档一起提交。UPM 消费者只安装包目录；不需要另建发布仓库，也不需要复制源码到发布分支。
 
-语言为 C#，开发工程使用 Unity 6000.5.9f1，插件以嵌入式 UPM 包位于 `Project/Packages/com.counull.clientmcp/`，包声明最低 Unity 2022.3。首版本机反射接入直接由 Runtime 承载，脚本与 MCP 共用同一个执行器；公网桥接仍为未实现方案，见 [运行时能力与连接方案](remote-diagnostics.md)。
+语言为 C#，开发工程使用 Unity 6000.5.9f1，插件以嵌入式 UPM 包位于 `Project/Packages/com.counull.clientmcp/`，包声明最低 Unity 2022.3。首版本机反射接入直接由 Runtime 承载，脚本与 MCP 共用同一个执行器；公网桥接实现与未验收边界，见 [运行时能力与连接方案](remote-diagnostics.md)。
 
 ![单仓库开发与发布结构](images/repository-upm.svg)
 
@@ -77,3 +77,48 @@ git push origin v0.1.0
 - [Unity：Git 依赖、子目录与 revision](https://docs.unity3d.com/6000.0/Documentation/Manual/upm-git.html)
 - [Unity：Package 目录布局](https://docs.unity3d.com/6000.0/Documentation/Manual/cus-layout.html)
 - [当前验证记录](status.md)
+
+## 双端通用核心与 C# 脚本
+
+`Runtime/Core/` 是唯一的通用源码，`ClientMcp.Core.asmdef` 声明 `noEngineReferences`；`DotNet/ClientMcp.Core` 直接编译同一份源码，目标为 .NET Standard 2.0。反射、句柄、操作计划、请求队列、本机 HTTP/MCP 和中转连接不引用 Unity。`Runtime/ClientMcpRuntime` 只负责 Unity 生命周期和 Update，`UnityReflectionHost` 处理场景对象发现、引擎构造限制和已销毁对象判断。
+
+宿主差异只保留在 `IReflectionHost`。普通 .NET 使用 `RegisteredObjectHost` 注册根对象；`find` 默认查已注册根对象，可显式传 `scope=roots`。Core 不枚举托管堆，也不解释业务对象。根对象注销不会自动释放已返回的句柄；使用方应显式 release 或用有效性谓词拒绝失效对象。Unity `scene/loaded` 的发现行为保持不变。
+
+已有 `ClientMcpRuntime.Start/Stop/ConnectRelay` 入口保留；搬迁的公开类型由 Runtime 类型转发。直接创建反射会话的 Unity 使用方应改为 `new ReflectionSession(new UnityReflectionHost())`；无参构造现在使用空的 .NET 根对象宿主。插件外部 HTTP 反射和 plan 格式保持兼容，新增独立 `clientmcp_script` 工具。
+
+### .NET 宿主
+
+引用 `DotNet/ClientMcp.Core/ClientMcp.Core.csproj`；需要 C# 脚本时引用 `DotNet/ClientMcp.Scripting/ClientMcp.Scripting.csproj`。这是项目引用，不复制源码，也不是 `Server/` 中转进程。
+
+```csharp
+var roots = new RegisteredObjectHost();
+roots.Register("root", applicationRoot);
+using var host = new ClientMcpHost(roots);
+host.Start(new ClientMcpOptions { InfoPath = privateInfoPath });
+// 在创建 host 的线程中周期调用：
+host.Pump();
+```
+
+创建、启动、Pump、停止均须在同一宿主线程串行执行。`ClientMcpThreadHost` 是可选的 .NET Adapter：创建专用诊断线程、在其中注册对象并 Pump，调用方等待 `Ready`，结束时 Dispose。它不会把业务对象自动变成线程安全对象；房间/Actor 等有执行上下文约束的对象，必须通过宿主已有 PostWork 或安全异步入口封送。无需独立线程的游戏循环直接使用 `ClientMcpHost`。
+
+### 可选 Roslyn 模块
+
+默认不提供编译器，所有 script 请求都被拒绝；反射仍可使用。显式给 `ClientMcpOptions.ScriptCompiler` 传入 `new RoslynScriptCompiler()` 才启用。脚本与反射共享认证、本机监听、对象句柄、宿主执行队列和活动记录。
+
+Unity 开发者克隆完整仓库后运行 `Tools/install-roslyn.ps1`，从固定的官方 NuGet 依赖构建脚本模块并安装到本包 `Plugins/Roslyn`。该目录为本地生成物、不入 Git；普通 Git URL 安装默认只有反射能力，需要脚本时先构建并部署可选模块。安装工具支持 `-UnityPackage <已安装包的可写路径>`，不应直接修改只读 PackageCache。构建 Player 前必须完成模块安装。
+
+Unity Player 加 `--clientmcp --clientmcp-scripts --clientmcp-info <私有文件>`；Editor Play 可调用 `ClientMcpRuntime.Start` 并显式提供编译器。程序集通过反射加载时的名称为 `ClientMcp.Scripting`。IL2CPP 明确拒绝启用脚本；不支持任意动态加载的 AOT 平台不在支持范围。
+
+Roslyn 4.8 编译 C# submission 后使用 `Assembly.Load(byte[])`；避免 Unity Mono 未实现的 `AssemblyLoadContext` 路径。编译在请求线程执行，只有生成的同步委托在宿主队列执行。每次 run 是全新 submission 状态，不延续上次脚本局部变量；需要复用的对象通过根对象或句柄取得。
+
+### 脚本协议与执行语义
+
+`/reflect` 接收 `op=script`，MCP 使用 `clientmcp_script`，两者支持 `prepare/run/result/list/release`。每次操作须有 description；prepare 提供 scriptId/code，run 提供 scriptId/sessionId/operationId 和可选 parameters。新意图新编号，超时重试原编号或查询 result。脚本可使用 `Parameters`、`Get<T>(handle)`；.NET 还可使用 `Root<T>(name)`。返回标量直接编码，其他对象返回同一反射会话的句柄。
+
+脚本最多 65536 字符，每会话最多 32 个已准备脚本、128 条脚本回执；计划缓存保持独立。已成功或失败的 run 都保留回执，原编号不同脚本/参数被拒绝。release 删除脚本及所属回执，结束其去重保证，但不释放对象句柄。编译器复用相同代码，最多加载 128 份不同代码；程序集不能靠 release 卸载，达到上限后须重启宿主再编译新代码。最多同时接受 2 个编译请求，编译器内部串行编译。
+
+脚本仅支持有限、同步、短时操作，拒绝 await/async，返回 Task 也作为失败；调用宿主非阻塞入口不代表其异步工作完成。错误不会回滚此前效果。网络等待超时或断线可取消尚未执行的请求，无法强制停止已经开始的任意脚本；原操作结束后可用 result 查询。请求执行等待超时从编译完成入队后计算，编译期间外部工具可能先超时；prepare 不执行脚本，重试应沿用 scriptId/code。
+
+这是受信任开发入口，不提供进程内沙箱；与宿主同权限。死循环、阻塞、脚本主动派生线程或异常退出都可能影响宿主。同步语法限制不构成安全隔离。日志只记录调用方说明与结果状态，不自动保存代码、参数和返回值；脚本自己输出的日志由脚本作者负责。
+
+参考：[Roslyn CreateScriptCompilation](https://learn.microsoft.com/en-us/dotnet/api/microsoft.codeanalysis.csharp.csharpcompilation.createscriptcompilation)、[Unity AOT 脚本限制](https://docs.unity3d.com/2022.3/Documentation/Manual/ScriptingRestrictions.html)。

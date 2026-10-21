@@ -1,8 +1,11 @@
 # ClientMCP 当前状态
 
-更新日期：2026-10-17
+更新日期：2026-10-21
 
 ## Now
+
+- 双端共享核心与可选 C# 脚本已实现，版本 `0.1.0-preview.6`。`Runtime/Core` 的 asmdef 禁止引擎引用，.NET Standard 2.0 项目编译同一份源码；Unity Adapter 保留原启动方式和场景对象语义，.NET Adapter 提供根对象注册、手动 Pump 或专用诊断线程。完整接入、安装和兼容说明见[工程结构](architecture-and-release.md#双端通用核心与-c-脚本)。
+- Roslyn 编译器为可选模块，默认关闭；编译在请求线程，脚本在宿主队列执行。支持 prepare/run/result/list/release、参数、共享句柄与成功/失败回执去重，本机 HTTP 和中转 MCP 共用。同步语法限制不构成沙箱；已开始的脚本不能因超时被强制终止，IL2CPP 不支持。可选 Unity DLL 由 Tools/install-roslyn.ps1 本地构建，不作为源码提交或随默认 UPM 安装。
 
 - [首版实现任务 #1](https://github.com/Counull/ClientMCP/issues/1)的功能与首轮验收已完成：通用反射元操作、本机 HTTP / MCP 接入和外部脚本客户端已实现，并在真实消费工程的 Editor Play 与 Windows Mono Player 中完成不暂停的对象注入、自然移动和显示验证。中转与 1:N 路由已添加，公网尚未部署，职责与接入方式见 [连接说明](remote-diagnostics.md)。
 
@@ -21,7 +24,7 @@
 - 通用操作计划已实现并通过独立验证：`prepare/run/result/list/release` 保存有限步骤、绑定本次参数和前序结果、同帧顺序执行、缓存成功或失败回执；新编号真正再执行，原编号重试不重复写入。缓存限当前会话，容量满时拒绝新建，显式释放会结束去重保证；没有自动回滚或定时调度。AI 优先复用规则同时进入使用说明与 MCP 提示；Console 对缓存回执明确标注“返回原回执，未重复执行”。具体业务计划与验收记录留在消费工程。
 
 - 已使用 Unity 6000.5.9f1 创建 `Project/` 开发验证工程，并生成 `DiagnosticsSandbox` 场景。
-- UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.5`；最低版本声明为 Unity 2022.3，依赖 Unity 官方 Newtonsoft Json。开发工程仍使用 Unity 6000.5.9f1。
+- UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.6`；最低版本声明为 Unity 2022.3，依赖 Unity 官方 Newtonsoft Json。开发工程仍使用 Unity 6000.5.9f1。
 - 整个工程与文档已发布至 [Counull/ClientMCP](https://github.com/Counull/ClientMCP) 公开仓库，默认分支为 `main`。采用 MIT 许可证。
 - 已用独立消费工程验证 HTTPS Git URL 子目录安装，无需手动复制包或源码。
 - Git URL 安装、版本标签及源码维护方式见 [工程结构与 UPM 发布流程](architecture-and-release.md)。
@@ -39,6 +42,15 @@
 - 首轮功能实现与验收无阻塞。其他平台、IL2CPP 和公网连接不在本轮已验证范围内。
 
 ## 依据与验证
+
+2026-10-21 双端核心与脚本：
+
+- .NET Standard 2.0 核心与可选 Roslyn 模块编译 0 错误、0 警告；35 项真实 loopback HTTP/MCP 检查通过，涵盖注册根对象、宿主线程、共享句柄、脚本参数、成功及失败去重、旧会话拒绝、排队超时不落地、专用线程 Adapter，以及已开始脚本超时后的真实回执与原编号重试。原反射计划检查同时覆盖共享对象。
+- 中转 45 项传输检查通过，增加实际 script 工具路由；Python 24 项既有契约检查通过，新增 Python 脚本入口另由实际 Mono Player 路径使用并验证。
+- Unity 6000.5.9f1 Editor 的原反射 19 项、原计划 29 项及脚本创建 Unity 对象/共享句柄检查通过。首轮发现重复 Microsoft.CSharp 引用，第二轮发现 Unity Mono 未实现默认脚本加载器的 AssemblyLoadContext；修复后改用 Roslyn 编译及 Assembly.Load 内存加载并通过。
+- Windows x64 / Mono / 非 Development 独立验证程序构建成功，12 项真实 HTTP 脚本检查通过：显式启用、脚本创建对象由反射读取、参数及句柄共享、成功/失败去重、回执、编译错误、销毁后句柄拒绝，以及请求间帧号增长。夹具无图形运行，不作为视觉或消费工程业务验收；该 Player 验证后仅调整了 preview 版本元数据与使用文档。
+- 另在现有 Unity 2022.3.15f1c1 消费工程确认新 Core/Runtime/Scripting 程序集加载，并通过后台 Roslyn 编译、宿主线程读取 Unity 版本；这是 Editor 接入检查，没有启动 Play 或替换消费工程手测 Player。纯 .NET 消费接入仅做编译，没有在真实房间执行脚本或重启现有服务。
+- 本地原始证据位于 `.scratch/core-adapters-editor-03.log`、`.scratch/core-adapters-build.log`、`.scratch/core-adapters-player/result.json`；不上传凭据和消费工程私有材料。IL2CPP、公网、其他平台及真实业务脚本仍未验证。
 
 2026-10-17 本轮：
 

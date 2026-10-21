@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <ClientMcpRuntimeRoot Condition="'$(ClientMcpRuntimeRoot)' == ''">$(MSBuildThisFileDirectory)../../Project/Packages/com.counull.clientmcp/Runtime</ClientMcpRuntimeRoot>
+    <ClientMcpRuntimeRoot Condition="'$(ClientMcpRuntimeRoot)' == ''">$(MSBuildThisFileDirectory)../../Project/Packages/com.counull.clientmcp/Runtime/Core</ClientMcpRuntimeRoot>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../ClientMcp.Server.csproj" />

@@ -5,7 +5,6 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using Newtonsoft.Json.Linq;
-using UnityEngine;
 
 namespace ClientMcp
 {
@@ -16,10 +15,12 @@ namespace ClientMcp
     internal sealed class ReflectionValueConverter
     {
         private readonly Func<string, object> _resolveHandle;
+        private readonly IReflectionHost _host;
 
-        public ReflectionValueConverter(Func<string, object> resolveHandle)
+        public ReflectionValueConverter(Func<string, object> resolveHandle, IReflectionHost host)
         {
             _resolveHandle = resolveHandle;
+            _host = host;
         }
 
         public object Convert(JToken token, Type targetType)
@@ -154,8 +155,8 @@ namespace ClientMcp
             var concreteDictionary = GetSupportedGeneric(targetType, typeof(Dictionary<,>));
             if (concreteDictionary != null)
                 return ConvertDictionary(token, concreteDictionary);
-            if (typeof(UnityEngine.Object).IsAssignableFrom(targetType))
-                throw new ArgumentException("UnityEngine.Object 参数必须使用现有对象句柄。");
+            if (_host.RequiresExistingObject(targetType))
+                throw new ArgumentException("宿主对象参数必须使用现有对象句柄。");
             if (!targetType.IsValueType && targetType.GetConstructor(Type.EmptyTypes) == null)
                 throw new ArgumentException("类型没有公开无参构造函数，请先 create 后传入句柄：" + targetType.FullName);
 

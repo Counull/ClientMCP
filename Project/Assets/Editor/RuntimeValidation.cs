@@ -20,7 +20,7 @@ namespace ClientMcp.Development
         public static void RunChecks()
         {
             _checks = 0;
-            var session = new ReflectionSession();
+            var session = new ReflectionSession(new UnityReflectionHost());
             var owner = new GameObject("ClientMCP Validation Probe");
             owner.AddComponent<RuntimeProbe>();
             var previousShared = RuntimeProbe.ProbeValue.Shared;

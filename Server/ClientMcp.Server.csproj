@@ -4,7 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <DefaultItemExcludes>$(DefaultItemExcludes);Tests/**</DefaultItemExcludes>
-    <ClientMcpRuntimeRoot Condition="'$(ClientMcpRuntimeRoot)' == ''">$(MSBuildThisFileDirectory)../Project/Packages/com.counull.clientmcp/Runtime</ClientMcpRuntimeRoot>
+    <ClientMcpRuntimeRoot Condition="'$(ClientMcpRuntimeRoot)' == ''">$(MSBuildThisFileDirectory)../Project/Packages/com.counull.clientmcp/Runtime/Core</ClientMcpRuntimeRoot>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />

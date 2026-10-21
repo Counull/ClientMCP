@@ -48,3 +48,9 @@ https://github.com/Counull/ClientMCP.git?path=/Project/Packages/com.counull.clie
 ```
 
 完整说明见 [GitHub 仓库](https://github.com/Counull/ClientMCP)。许可证见包内 `LICENSE.md`。
+
+## 通用核心与可选 C# 脚本
+
+Unity Runtime 是共享核心的宿主 Adapter。纯 .NET 可直接引用本仓库 DotNet 项目；对象查找使用已注册根对象。可选 Roslyn 模块默认关闭，需构建部署并显式提供 ScriptCompiler，或为 Mono Player 添加 --clientmcp-scripts。脚本支持参数、共享句柄和执行回执；执行任意受信任代码，不是沙箱，超时不能强制终止已经开始的脚本，IL2CPP 不支持。
+
+直接创建反射会话的 Unity 使用方须使用 `new ReflectionSession(new UnityReflectionHost())`，无参构造用于 .NET 根对象宿主。完整安装、宿主线程、协议与容量限制见[双端核心说明](https://github.com/Counull/ClientMCP/blob/main/doc/architecture-and-release.md#双端通用核心与-c-脚本)。

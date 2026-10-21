@@ -166,3 +166,21 @@ python -m unittest discover -s Tools/tests -v
 ```
 
 这些测试使用本机模拟 HTTP 服务，验证请求、认证错误、异常、JSON 与超时处理；不等同于 Unity 或发布包验证。
+
+## 可选 C# 脚本
+
+仅宿主显式启用且部署 Roslyn 模块后可用；脚本与反射共享认证和句柄。Unity Mono 与 .NET 使用同一协议，IL2CPP 不支持。
+
+```python
+client.prepare_script("read-name", 'return Get<UnityEngine.GameObject>((string)Parameters["object"]).name;',
+                      description="准备读取对象名称的脚本")
+receipt = client.run_script("read-name", "read-name-001", session_id=client.session_id,
+                            parameters={"object": object_handle}, description="读取本次对象名称")
+client.script_result("read-name-001", session_id=client.session_id)
+client.list_scripts()
+client.release_script("read-name", session_id=client.session_id)
+```
+
+直接 HTTP 使用 `op=script`；MCP 使用 `clientmcp_script`，中转仍须每次带 instanceId。action 为 prepare/run/result/list/release；所有请求提供 description。run 返回 state、cacheHit 及 result；result.value 为标量或对象句柄。新意图使用新 operationId，成功和失败的原编号重试均不重做。释放脚本会结束所属操作的去重保证。
+
+脚本是受信任同进程代码，限定同步短操作，不支持 await/async。超时或断线不表示已经开始的脚本被终止；查原回执后再决定下一步，不直接换编号重做。完整容量、线程和安装规则见[宿主说明](../doc/architecture-and-release.md#双端通用核心与-c-脚本)。

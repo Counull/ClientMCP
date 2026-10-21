@@ -26,6 +26,7 @@ _OPERATION_DESCRIPTIONS = {
     "invoke": "调用方法",
     "release": "释放对象引用",
     "plan": "操作缓存反射计划",
+    "script": "操作受信任 C# 脚本",
 }
 _PLAN_ACTION_DESCRIPTIONS = {
     "prepare": "准备缓存反射计划",
@@ -293,6 +294,28 @@ class ClientMcp:
     def release_plan(self, plan_id, *, session_id, description=_DESCRIPTION_UNSET):
         """释放指定会话的计划；不在客户端维护计划或运行对象缓存。"""
         return self.request("plan", action="release", planId=plan_id,
+                            sessionId=session_id, description=description)
+
+    def prepare_script(self, script_id, code, *, description=_DESCRIPTION_UNSET):
+        return self.request("script", action="prepare", scriptId=script_id,
+                            code=code, description=description)
+
+    def run_script(self, script_id, operation_id, *, session_id, parameters=None,
+                   description=_DESCRIPTION_UNSET):
+        return self.request("script", action="run", scriptId=script_id,
+                            operationId=operation_id, sessionId=session_id,
+                            parameters={} if parameters is None else parameters,
+                            description=description)
+
+    def script_result(self, operation_id, *, session_id, description=_DESCRIPTION_UNSET):
+        return self.request("script", action="result", operationId=operation_id,
+                            sessionId=session_id, description=description)
+
+    def list_scripts(self, *, description=_DESCRIPTION_UNSET):
+        return self.request("script", action="list", description=description)
+
+    def release_script(self, script_id, *, session_id, description=_DESCRIPTION_UNSET):
+        return self.request("script", action="release", scriptId=script_id,
                             sessionId=session_id, description=description)
 
 

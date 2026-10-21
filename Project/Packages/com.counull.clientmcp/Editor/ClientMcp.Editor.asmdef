@@ -1,7 +1,7 @@
 {
   "name": "ClientMcp.Editor",
   "rootNamespace": "ClientMcp.Editor",
-  "references": [ "ClientMcp.Runtime", "Unity.Newtonsoft.Json" ],
+  "references": [ "ClientMcp.Runtime", "ClientMcp.Core", "Unity.Newtonsoft.Json" ],
   "includePlatforms": [ "Editor" ],
   "autoReferenced": true
 }

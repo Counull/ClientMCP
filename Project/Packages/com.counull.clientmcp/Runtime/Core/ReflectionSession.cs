@@ -6,14 +6,12 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using Newtonsoft.Json.Linq;
-using UnityEngine;
-using UnityObject = UnityEngine.Object;
 
 namespace ClientMcp
 {
     /// <summary>
     /// 一个连接持有一个反射会话：只负责类型、对象句柄和反射元操作，不解释业务含义。
-    /// 所有入口都必须由传输层调度到 Unity 主线程；这里不创建线程，也不自动执行属性 getter。
+    /// 所有入口都必须由传输层调度到 宿主执行上下文；这里不创建线程，也不自动执行属性 getter。
     /// </summary>
     public sealed class ReflectionSession
     {
@@ -25,12 +23,24 @@ namespace ClientMcp
         private readonly Dictionary<string, object> _objects = new Dictionary<string, object>(StringComparer.Ordinal);
         private readonly Dictionary<object, string> _handles = new Dictionary<object, string>(ReferenceIdentityComparer.Instance);
         private readonly ReflectionValueConverter _converter;
+        private readonly IReflectionHost _host;
         private ulong _nextHandle = 1;
 
-        public ReflectionSession()
+        public ReflectionSession() : this(null) { }
+
+        public ReflectionSession(IReflectionHost host)
         {
-            _converter = new ReflectionValueConverter(ResolveHandle);
+            _host = host ?? new RegisteredObjectHost();
+            _converter = new ReflectionValueConverter(ResolveHandle, _host);
         }
+
+        public object GetRoot(string name)
+        {
+            if (!(_host is RegisteredObjectHost roots)) throw new NotSupportedException("当前宿主不提供注册根对象；Unity 脚本可使用引擎对象入口。");
+            return roots.GetRoot(name);
+        }
+        public object GetObject(string handle) => ResolveHandle(handle);
+        public JObject Encode(object value) => Value(value, value?.GetType());
 
         /// <summary>执行单次元操作；异常保留实际类型和根因，由传输层统一转成错误响应。</summary>
         public JObject Execute(JObject request)
@@ -94,25 +104,15 @@ namespace ClientMcp
         private JObject FindObjects(JObject request)
         {
             var type = ResolveType(RequiredString(request, "type"));
-            if (!typeof(UnityObject).IsAssignableFrom(type))
-                throw new ArgumentException("find 只查找 UnityEngine.Object；普通 C# 对象请从字段、返回值或 create 获取句柄。");
-
-            var scope = OptionalString(request, "scope") ?? "scene";
-            if (scope != "scene" && scope != "loaded")
-                throw new ArgumentException("scope 只能是 scene 或 loaded。");
-
+            var scope = OptionalString(request, "scope");
             var page = ReadPage(request);
-            // FindObjectsOfTypeAll 包含未激活对象。scene 排除项目资产和未加载场景；loaded 明确包含资产。
-            var objects = Resources.FindObjectsOfTypeAll(type)
-                .Where(item => item != null && (scope == "loaded" || IsSceneObject(item)))
-                .OrderBy(UnityObjectId, StringComparer.Ordinal)
-                .ToArray();
+            var objects = _host.FindObjects(type, scope).ToArray();
             var items = new JArray();
             foreach (var item in objects.Skip(page.Offset).Take(page.Limit))
             {
-                var description = Reference(item);
-                description["name"] = item.name;
-                description["instanceId"] = UnityObjectId(item);
+                var description = Reference(item.Value);
+                description["name"] = item.Name;
+                description["instanceId"] = item.Id;
                 items.Add(description);
             }
             return Paged(items, objects.Length, page);
@@ -214,8 +214,8 @@ namespace ClientMcp
             var type = ResolveType(RequiredString(request, "type"));
             if (type.IsAbstract || type.IsInterface || type.ContainsGenericParameters || type.IsPointer || type.IsByRef)
                 throw new NotSupportedException("该类型不能直接构造：" + TypeName(type));
-            if (typeof(UnityObject).IsAssignableFrom(type))
-                throw new NotSupportedException("UnityEngine.Object 不能通过 C# 构造函数创建；请 invoke 该类型现有的工厂方法。");
+            if (_host.RequiresExistingObject(type))
+                throw new NotSupportedException("宿主对象不能通过 C# 构造函数创建；请 invoke 该类型现有的工厂方法。");
             var arguments = ReadArguments(request);
             var parameterTypes = ReadParameterTypes(request, arguments.Count);
             var constructors = type.GetConstructors(DeclaredMembers).Where(item => !item.IsStatic).Cast<MethodBase>();
@@ -441,29 +441,7 @@ namespace ClientMcp
             return value;
         }
 
-        private static void EnsureAlive(object value)
-        {
-            if (value is UnityObject unityObject && unityObject == null)
-                throw new InvalidOperationException("句柄引用的 Unity 对象已销毁，句柄已过期。");
-        }
-
-        private static bool IsSceneObject(UnityObject value)
-        {
-            var gameObject = value as GameObject;
-            if (gameObject == null && value is Component component)
-                gameObject = component.gameObject;
-            return gameObject != null && gameObject.scene.IsValid() && gameObject.scene.isLoaded;
-        }
-
-        private static string UnityObjectId(UnityObject value)
-        {
-            // Unity 6000.5 将 GetInstanceID 标记为编译错误；仅在这一处适配引擎标识 API 的变化。
-#if UNITY_6000_5_OR_NEWER
-            return value.GetEntityId().ToString();
-#else
-            return value.GetInstanceID().ToString(CultureInfo.InvariantCulture);
-#endif
-        }
+        private void EnsureAlive(object value) => _host.EnsureAlive(value);
 
         private static Type ResolveType(string name)
         {

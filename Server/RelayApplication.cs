@@ -95,7 +95,7 @@ public static class RelayApplication
                 if (arguments != null && arguments.Count != 0) return InvalidArguments(request, "clientmcp_instances accepts no arguments.");
                 return ToolReply(request, registry.ListInstances(), false);
             }
-            if (tool is "clientmcp_reflect" or "clientmcp_status")
+            if (tool is "clientmcp_reflect" or "clientmcp_status" or "clientmcp_script")
             {
                 if (arguments?["instanceId"]?.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)arguments["instanceId"]) ||
                     ((string)arguments["instanceId"]).Length > 128)
@@ -105,6 +105,7 @@ public static class RelayApplication
                 string instanceId = (string)arguments["instanceId"];
                 var command = tool == "clientmcp_status" ? new JObject { ["op"] = "status" } : (JObject)arguments.DeepClone();
                 command.Remove("instanceId");
+                if (tool == "clientmcp_script") command["op"] = "script";
                 var body = await registry.ForwardAsync(instanceId, command, cancellation);
                 var forwarded = (JObject)request.DeepClone();
                 forwarded["params"]["arguments"] = command;

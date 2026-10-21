@@ -32,3 +32,10 @@ Thumbs.db
 !Server/**/*.csproj
 Server/**/bin/
 Server/**/obj/
+
+# Shared core and optional scripting SDK projects
+!DotNet/**/*.csproj
+DotNet/**/bin/
+DotNet/**/obj/
+Project/Packages/com.counull.clientmcp/Plugins/
+Project/Packages/com.counull.clientmcp/Plugins.meta

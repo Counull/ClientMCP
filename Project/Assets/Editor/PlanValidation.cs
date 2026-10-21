@@ -14,7 +14,7 @@ namespace ClientMcp.Development
         public static void RunChecks()
         {
             checks = 0;
-            var reflection = new ReflectionSession();
+            var reflection = new ReflectionSession(new UnityReflectionHost());
             var plans = new ReflectionPlanSession(reflection, SessionId);
             try
             {

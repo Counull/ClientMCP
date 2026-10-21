@@ -1,5 +1,12 @@
 # 更新记录
 
+## 0.1.0-preview.6 - 2026-10-21
+
+- 抽取不依赖 Unity 的共享核心，提供 Unity 和 .NET 注册根对象/执行线程 Adapter，两端使用同一套反射、计划和传输。
+- 添加显式启用的可选 Roslyn 同步脚本、脚本参数、共享对象句柄、操作编号去重与失败回执；支持本机 HTTP 和中转 MCP。
+- 提供 .NET Standard 2.0 项目引用与可选 Unity 模块构建工具；默认反射安装不引入 Roslyn DLL。
+- 直接构造反射会话的 Unity 使用方须显式传 UnityReflectionHost；既有 ClientMcpRuntime 及外部反射/计划协议保持兼容。
+
 ## 0.1.0-preview.5 - 2026-10-17
 
 - 添加可选 WSS 出站连接，与本机入口共用主线程反射执行器、操作说明和计划缓存。

@@ -33,7 +33,7 @@ namespace ClientMcp
             _sessionId = sessionId;
         }
 
-        /// <summary>prepare 只校验并复制定义；只有 run 会实际执行反射操作。</summary>
+        /// <summary>prepare 只缓存定义；execute 准备并执行，run 复用已有计划。</summary>
         public JObject Execute(JObject request)
         {
             if (request == null)
@@ -44,6 +44,7 @@ namespace ClientMcp
             {
                 case "prepare": return Prepare(request);
                 case "run": return Run(request);
+                case "execute": return Run(request, true);
                 case "result": return Result(request);
                 case "list": return new JObject
                 {
@@ -51,7 +52,7 @@ namespace ClientMcp
                     ["plans"] = new JArray(_plans.Values.Select(plan => Describe(plan, false)))
                 };
                 case "release": return Release(request);
-                default: throw new ArgumentException("未知计划 action；可用值：prepare、run、result、list、release。");
+                default: throw new ArgumentException("未知计划 action；可用值：prepare、execute、run、result、list、release。");
             }
         }
 
@@ -63,6 +64,15 @@ namespace ClientMcp
         }
 
         private JObject Prepare(JObject request)
+        {
+            var plan = ReadPlan(request);
+            var cached = _plans.ContainsKey(plan.Id);
+            if (!cached) _plans.Add(plan.Id, plan);
+            return Describe(plan, cached);
+        }
+
+        // 校验定义但暂不登记；execute 的参数、返回范围和操作号也通过后才保留计划。
+        private Plan ReadPlan(JObject request)
         {
             var planId = ReadId(request, "planId");
             if (request["description"]?.Type != JTokenType.String)
@@ -83,21 +93,20 @@ namespace ClientMcp
             {
                 if (!JToken.DeepEquals(existing.Definition, definition))
                     throw new InvalidOperationException("planId 已存在且定义不同；请先显式 release，或使用新的 planId。");
-                return Describe(existing, true);
+                return existing;
             }
             if (_plans.Count >= MaxPlans)
                 throw new InvalidOperationException("计划数量已达到 32；请显式 release 不再使用的计划。");
-            var plan = new Plan(planId, definition, parameters.ToArray());
-            _plans.Add(planId, plan);
-            return Describe(plan, false);
+            return new Plan(planId, definition, parameters.ToArray());
         }
 
-        private JObject Run(JObject request)
+        private JObject Run(JObject request, bool prepare = false)
         {
             RequireSession(request);
             var planId = ReadId(request, "planId");
             var operationId = ReadId(request, "operationId");
-            var plan = FindPlan(planId);
+            var plan = prepare ? ReadPlan(request) : FindPlan(planId);
+            var resultSteps = ReadResultSteps(request, ((JArray)plan.Definition["steps"]).Count);
             if (request["parameters"] != null && !(request["parameters"] is JObject))
                 throw new ArgumentException("parameters 必须是 JSON 对象。");
             var parameters = (JObject)(request["parameters"]?.DeepClone() ?? new JObject());
@@ -115,10 +124,11 @@ namespace ClientMcp
             {
                 if (previous.PlanId != planId || !JToken.DeepEquals(previous.Parameters, parameters))
                     throw new InvalidOperationException("operationId 已用于不同计划或参数，拒绝重复执行。");
-                return Receipt(previous, true);
+                return Receipt(previous, true, resultSteps);
             }
             if (_operations.Count >= MaxOperations)
                 throw new InvalidOperationException("操作记录已达到 128；请显式 release 计划及其记录后再执行。");
+            if (prepare && !_plans.ContainsKey(planId)) _plans.Add(planId, plan);
 
             // 首步前保留操作号。即使中途失败，重试相同操作号也只返回收据，绝不重做前面的写入。
             var results = new JArray();
@@ -145,13 +155,13 @@ namespace ClientMcp
                     var cause = exception.GetBaseException();
                     receipt["failedStep"] = index;
                     receipt["error"] = new JObject { ["type"] = cause.GetType().FullName, ["message"] = cause.Message };
-                    return Receipt(operation, false);
+                    return Receipt(operation, false, resultSteps);
                 }
             }
             receipt["state"] = "completed";
             receipt.Remove("failedStep");
             receipt.Remove("error");
-            return Receipt(operation, false);
+            return Receipt(operation, false, resultSteps);
         }
 
         private JObject Result(JObject request)
@@ -159,7 +169,8 @@ namespace ClientMcp
             RequireSession(request);
             if (!_operations.TryGetValue(ReadId(request, "operationId"), out var operation))
                 throw new KeyNotFoundException("没有该 operationId 的操作记录。");
-            return Receipt(operation, true);
+            var plan = FindPlan(operation.PlanId);
+            return Receipt(operation, true, ReadResultSteps(request, ((JArray)plan.Definition["steps"]).Count));
         }
 
         private JObject Release(JObject request)
@@ -275,9 +286,45 @@ namespace ClientMcp
             };
         }
 
-        private static JObject Receipt(Operation operation, bool cacheHit)
+        private static int[] ReadResultSteps(JObject request, int stepCount)
         {
-            var result = (JObject)operation.Receipt.DeepClone();
+            if (request.Property("resultSteps") == null) return null;
+            if (!(request["resultSteps"] is JArray values) || values.Count > MaxSteps)
+                throw new ArgumentException("resultSteps 必须是最多 64 个步骤序号的数组；省略返回全部，空数组只返回状态。");
+            var indices = new int[values.Count];
+            var seen = new HashSet<int>();
+            for (var index = 0; index < values.Count; index++)
+            {
+                var step = NonNegativeIndex(values[index], "resultSteps 序号");
+                if (step >= stepCount || !seen.Add(step))
+                    throw new ArgumentException("resultSteps 序号必须在计划范围内且不能重复。");
+                indices[index] = step;
+            }
+            return indices;
+        }
+
+        private static JObject Receipt(Operation operation, bool cacheHit, int[] resultSteps)
+        {
+            // 完整结果仍保留供步骤引用和后续查询；仅复制调用方需要的结果，避免先全量复制再裁剪。
+            var result = new JObject();
+            foreach (var property in operation.Receipt.Properties())
+                if (property.Name != "results") result[property.Name] = property.Value.DeepClone();
+            var results = (JArray)operation.Receipt["results"];
+            if (resultSteps == null) result["results"] = results.DeepClone();
+            else
+            {
+                var returned = new JArray();
+                var indices = new JArray();
+                foreach (var step in resultSteps)
+                {
+                    // 失败时尚未产生的结果不返回；failedStep 与 completedSteps 保留原步骤序号。
+                    if (step >= results.Count) continue;
+                    indices.Add(step);
+                    returned.Add(results[step].DeepClone());
+                }
+                result["results"] = returned;
+                result["resultSteps"] = indices;
+            }
             result["cacheHit"] = cacheHit;
             return result;
         }

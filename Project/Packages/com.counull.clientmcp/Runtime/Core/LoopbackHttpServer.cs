@@ -155,7 +155,7 @@ namespace ClientMcp
 
         static void WriteResponse(NetworkStream stream, HttpReply reply)
         {
-            byte[] body = reply.Body == null ? Array.Empty<byte>() : Encoding.UTF8.GetBytes(reply.Body.ToString(Formatting.None));
+            byte[] body = reply.SerializedBody;
             string reason = reply.Status == 200 ? "OK" : reply.Status == 202 ? "Accepted" : "Request Failed";
             string headers = "HTTP/1.1 " + reply.Status + " " + reason + "\r\nContent-Type: application/json; charset=utf-8\r\n" +
                 "Content-Length: " + body.Length + "\r\nConnection: close\r\nCache-Control: no-store\r\n" +

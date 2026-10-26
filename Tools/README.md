@@ -7,7 +7,7 @@
 1. 优先复用当前上下文或消费工程中已验证的计划、脚本入口；已知计划属于当前会话时直接执行，未知是否有可用计划时才 `list_plans()`，不在每次操作前重复列举。
 2. 首次操作且无可复用步骤时，若 Agent 可读取消费工程源码，先用自己的文件工具定向阅读相关定义和必要调用点，确认完整类型名、对象入口、成员路径、参数类型及调用条件。信息足够构造操作即停止，不扫描整个工程。
 3. 对源码已明确的结构和签名，直接使用对应 `type`、`member`、`declaringType`、`parameterTypes`，无需例行 `types → inspect`。当前对象、句柄和影响本次操作的状态仍从目标运行实例读取。
-4. 已知的连续对象定位和读取可以合并到现有 `plan`，减少逐层往返。需要根据读取结果判断是否写入时，先完成读取和判断，再发起写入；计划没有条件分支，不会因业务状态不满足而自动跳过后续写入。
+4. 已知的连续对象定位和读取可以合并到现有 `plan`；已确认当前会话时，首次用 `execute_plan()` 一次准备并执行，之后用 `run_plan()` 复用。用 `result_steps` 只返回需要的步骤，减少往返和输出。需要根据读取结果判断是否写入时，先完成读取和判断，再发起写入；计划没有条件分支，不会因业务状态不满足而自动跳过后续写入。
 5. 源码不可访问、信息不足或与运行版本不匹配时，才对相关类型和成员做最小反射探测；首次验证成功后按下方规则保存步骤。源码读取由 Agent 完成，ClientMCP 不提供源码访问接口。
 
 写入或调用前，通过源码或 `inspect` 明确成员签名和副作用，并检查必要的当前状态。源码可读不表示与运行包完全一致；发现类型、成员或签名不匹配时只核对相关路径，不以反复全量探测作为默认恢复方式。超时或执行结果未知时，仍先沿用原操作编号重试或查回执。
@@ -66,6 +66,10 @@ Python 各反射方法和 `request` 都接受可选的 `description=`。省略�
 
 Unity 中可通过 **Tools → ClientMCP → Connection Status** 查看当前 Editor Play 实例的监听入口与请求记录。外部 `health()` 及 MCP `clientmcp_status` 的原结果新增 `connection`，包含分类请求计数、排队数量与最近 16 条请求。健康请求读取快照时会包含自身正在处理的状态；记录不含认证前被拒绝的请求，也不表示有持久在线的 AI 客户端。
 
+`connection.recentRequests` 的每条记录还包含 `durationMs`、`queueMs`、`executionMs` 和 `responseBytes`：分别是运行时接收已解析请求至响应体序列化结束的时间、等待宿主执行的时间、宿主实际执行的时间，以及 UTF-8 JSON 响应体字节数。毫秒使用单调时钟；未入队时 `queueMs=null`，未开始或响应时仍在执行则 `executionMs=null`，不能解释为耗时为零或操作已撤销。无法生成响应体时大小为 `null`；正常空响应为 0。本机发送复用计量时的序列化数据。
+
+这些记录可通过状态接口或 `GetConnectionStatus()` 获取，沿用现有请求计数与最近 16 条上限。`durationMs` 不包含网络收发与 Agent 思考；中转请求的大小指 Runtime 返回的 JSON，不含网关外层封装。请求记录只保存数字和操作摘要，不保存参数或结果。比较同一任务时分别看请求数、这些指标和调用方测得的总等待时间。
+
 所有方法保留服务返回的 `result`，不会把 `get`、`create`、`invoke` 的 `{value, type}` 自动拆开。`value` 中的对象引用格式为 `{"$ref":"o1"}`。实例成员的 `target` 可以传句柄字符串、引用描述，也可以直接传这些方法的返回对象；静态成员传 `type=`。参数中的引用直接使用 `{"$ref":"o1"}`，不要把整个返回对象放进 `args`。
 
 ```python
@@ -106,7 +110,7 @@ print(client.get("o1", "name", kind="property"))
 
 ### 准备与执行
 
-以下计划每次创建一个文本对象、追加本次参数并读回长度，不依赖 Editor 或动态 C# 编译器：
+以下计划每次创建一个文本对象、追加本次参数、读回长度并释放临时句柄，不依赖 Editor 或动态 C# 编译器。当前会话可来自已选实例的连接文件；没有时先读取一次状态。后续请求复用这个已确认的会话标识：
 
 ```python
 steps = [
@@ -114,27 +118,31 @@ steps = [
     {"op": "invoke", "target": {"$step": 0, "path": ["value"]}, "member": "Append",
      "args": [{"$param": "text"}], "parameterTypes": ["System.String"]},
     {"op": "get", "target": {"$step": 0, "path": ["value"]}, "member": "Length", "kind": "property"},
+    {"op": "release", "targets": [{"$step": 0, "path": ["value"]}]},
 ]
-prepared = client.prepare_plan("append-text-v1", steps, description="构造文本并检查长度")
-session_id = prepared["sessionId"]
-first = client.run_plan("append-text-v1", "operation-1", session_id=session_id,
-                        parameters={"text": "hello"}, description="执行文本构造检查")
+session_id = client.session_id or client.health()["sessionId"]
+first = client.execute_plan("append-text-v1", "operation-1", steps, session_id=session_id,
+                            parameters={"text": "hello"}, result_steps=[2],
+                            description="构造文本并检查长度")
 assert first["state"] == "completed"
-print(first["results"][2]["value"])
+assert first["resultSteps"] == [2]
+print(first["results"][0]["value"])  # 所选第 2 步的结果，长度为 5。
 
 # 同编号重试只取旧回执，不再创建对象。
 retry = client.run_plan("append-text-v1", "operation-1", session_id=session_id,
-                        parameters={"text": "hello"}, description="确认上次操作结果，避免重复执行")
+                        parameters={"text": "hello"}, result_steps=[],
+                        description="确认上次操作结果，避免重复执行")
 assert retry["cacheHit"] is True
-print(client.plan_result("operation-1", session_id=session_id))
+# 需要排查时再查询完整回执，不会重新执行。
+# full = client.plan_result("operation-1", session_id=session_id)
 
 # 新编号代表明确的新执行，使用本次参数生成新对象。
 second = client.run_plan("append-text-v1", "operation-2", session_id=session_id,
-                         parameters={"text": "world"}, description="再次执行文本构造检查")
+                         parameters={"text": "world"}, result_steps=[2],
+                         description="再次执行文本构造检查")
 assert second["state"] == "completed"
 
-# 不再需要查询或重试时显式释放；计划释放本身不释放核心对象句柄。
-client.release([first["results"][0]["value"], second["results"][0]["value"]])
+# 计划内已释放临时对象句柄；不再需要查询或重试时再释放计划和回执。
 client.release_plan("append-text-v1", session_id=session_id)
 ```
 
@@ -143,12 +151,19 @@ client.release_plan("append-text-v1", session_id=session_id)
 | Python 方法 | 必需信息 | 用途 |
 | --- | --- | --- |
 | `prepare_plan(plan_id, steps, description=...)` | 计划标识与步骤 | 只校验、复制定义并返回当前 `sessionId`、参数名和步骤数，不执行 |
-| `run_plan(plan_id, operation_id, session_id=..., parameters=...)` | 计划、操作编号与会话 | 一次主线程调用顺序执行，或返回相同编号的原回执 |
-| `plan_result(operation_id, session_id=...)` | 操作编号与会话 | 查询原执行结果，包含失败回执 |
+| `execute_plan(plan_id, operation_id, steps, session_id=..., parameters=..., result_steps=...)` | 步骤、计划、操作编号与会话 | 一次请求校验、缓存并执行；原编号重试取原回执 |
+| `run_plan(plan_id, operation_id, session_id=..., parameters=..., result_steps=...)` | 计划、操作编号与会话 | 一次主线程调用顺序执行，或返回相同编号的原回执 |
+| `plan_result(operation_id, session_id=..., result_steps=...)` | 操作编号与会话 | 查询原执行结果，包含失败回执 |
 | `list_plans()` | 当前连接 | 列出已准备计划的说明、参数名和步骤数 |
 | `release_plan(plan_id, session_id=...)` | 计划与会话 | 删除该计划和对应操作回执，结束其去重保证 |
 
-这些方法都支持 `description=`。原始 HTTP 与 MCP 使用同一对象格式：`op="plan"`，`action` 为 `prepare/run/result/list/release`；Python 的下划线字段对应 `planId`、`operationId`、`sessionId`。MCP 仍调用 `clientmcp_reflect`，无需新增业务工具。
+这些方法都支持 `description=`。原始 HTTP 与 MCP 使用同一对象格式：`op="plan"`，`action` 为 `prepare/execute/run/result/list/release`；Python 的下划线字段对应 `planId`、`operationId`、`sessionId`、`resultSteps`。MCP 仍调用 `clientmcp_reflect`，无需新增业务工具。仅需准备、不应立即执行时仍用 `prepare_plan()`；原 `prepare → run` 调用保持兼容。`execute` 和结果选择需要 Runtime 版本 `0.1.0-preview.7` 或更新版本；中转的工具发现也需更新到同版共享定义。
+
+### 选择返回结果
+
+`execute/run/result` 可提供 `resultSteps`（Python 为 `result_steps`）：省略返回完整 `results`，`[]` 只返回状态和错误，`[2,0]` 按指定顺序返回第 2、0 步。序号从 0 开始，必须为计划范围内不重复的整数；无效选择在执行前拒绝。返回的 `resultSteps` 与 `results` 逐项对应；失败时未执行的所选步骤不返回，`failedStep` 和 `completedSteps` 始终使用原计划序号。
+
+选择只影响响应内容，不影响执行步骤、前序结果引用或对象句柄的生命周期。完整回执仍按原容量保留；同一操作编号可以改变返回范围，也可省略选择查询完整结果，均不会重新执行。这个机制减少响应大小与复制量，不减少回执缓存占用；需要释放的中间句柄应在计划内显式释放，或查询完整回执后处理。
 
 ### 执行语义与限制
 
@@ -156,7 +171,7 @@ client.release_plan("append-text-v1", session_id=session_id)
 
 回执包含 `state`、`cacheHit`、`completedSteps` 与 `results`；失败时额外包含从 0 开始的 `failedStep` 和 `error`。失败回执同样缓存，重试不会重做先前成功的步骤。`/reflect` 成功接收计划请求后可用 `ok=true` 返回 `state="failed"`，Python 保留该回执，调用方必须检查 `state`；MCP 对应返回 `isError=true` 并保留结构化回执。Console 与请求历史也标记失败。
 
-同名计划只能以完全相同的步骤与说明重复准备；不同定义必须使用新计划名，或明确释放旧计划。同一 `operationId` 在整个会话内唯一，换计划或参数重用会被拒绝。`run/result/release` 必须提供准备结果中的当前 `sessionId`。
+同名计划只能以完全相同的步骤与说明重复准备；`execute` 也遵循这一规则，重试时需保留原步骤与说明，或改用原 `run/result` 查回执。不同定义必须使用新计划名，或明确释放旧计划。同一 `operationId` 在整个会话内唯一，换计划或参数重用会被拒绝。`execute/run/result/release` 必须提供已确认的当前 `sessionId`；`execute` 的会话、定义、参数、返回范围及容量校验通过后才登记新计划并开始执行。
 
 每个会话最多 32 个计划和 128 个操作记录，容量满时拒绝新建，不自动淘汰旧编号。显式释放计划会同时删除其回执，之后原编号不再受到去重保护；请在确认不再重试后释放。计划释放和回执命中都不会销毁对象；结果中的对象句柄仍由原反射会话管理。
 

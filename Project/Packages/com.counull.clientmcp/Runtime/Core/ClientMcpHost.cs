@@ -137,9 +137,11 @@ namespace ClientMcp
             // 仅通过 HTTP 认证且报文解析完成的请求才会进入这里；Editor 刷新窗口不会增加计数。
             bool tracked = RecordRequestStarted(path);
             bool success = false;
+            var metrics = new RequestMetrics();
+            HttpReply reply = null;
             try
             {
-                HttpReply reply = DispatchHttp(method, path, body, cancellation);
+                reply = DispatchHttp(method, path, body, cancellation, metrics);
                 success = reply.Status < 400 && reply.Body?["error"] == null &&
                     (bool?)reply.Body?["ok"] != false && (bool?)reply.Body?["result"]?["isError"] != true &&
                     !IsFailedPlanReceipt(reply.Body?["result"] as JObject);
@@ -147,17 +149,18 @@ namespace ClientMcp
             }
             finally
             {
-                if (tracked) RecordRequestCompleted(path, DescribeOperation(path, body), RequestDescription(path, body), success);
+                if (tracked) RecordRequestCompleted(path, DescribeOperation(path, body), RequestDescription(path, body),
+                    success, metrics, reply?.SerializedBody.Length);
             }
         }
 
-        HttpReply DispatchHttp(string method, string path, JObject body, CancellationToken cancellation)
+        HttpReply DispatchHttp(string method, string path, JObject body, CancellationToken cancellation, RequestMetrics metrics)
         {
-            if (path == "/mcp") return McpEndpoint.Handle(method, body, command => EnqueueAndWait(command, path, cancellation));
-            if (path == "/health" && method == "GET") return HttpReply.Json(200, Success(EnqueueAndWait(new JObject { ["op"] = "status" }, path, cancellation)));
+            if (path == "/mcp") return McpEndpoint.Handle(method, body, command => EnqueueAndWait(command, path, cancellation, metrics));
+            if (path == "/health" && method == "GET") return HttpReply.Json(200, Success(EnqueueAndWait(new JObject { ["op"] = "status" }, path, cancellation, metrics)));
             if (path != "/reflect") return HttpReply.Error(404, "Unknown endpoint.");
             if (method != "POST") return HttpReply.Error(405, "Use POST.");
-            try { return HttpReply.Json(200, Success(EnqueueAndWait(body, path, cancellation))); }
+            try { return HttpReply.Json(200, Success(EnqueueAndWait(body, path, cancellation, metrics))); }
             catch (Exception error) { return HttpReply.Json(200, Failure(error)); }
         }
 
@@ -175,20 +178,22 @@ namespace ClientMcp
             }
         }
 
-        void RecordRequestCompleted(string path, string operation, string description, bool success)
+        void RecordRequestCompleted(string path, string operation, string description, bool success,
+            RequestMetrics metrics, int? responseBytes)
         {
+            var entry = metrics.Snapshot(responseBytes);
+            entry["timeUtc"] = DateTime.UtcNow.ToString("O");
+            entry["path"] = path == "/mcp" || path == "/reflect" || path == "/health" ? path : "(unknown)";
+            entry["operation"] = operation;
+            entry["description"] = description;
+            entry["success"] = success;
             lock (connectionGate)
             {
                 // 停止后旧接收线程可能仍在退出，不能把旧会话活动写回已经清空的状态。
                 if (stopped) return;
                 activeRequests--;
                 if (recentRequests.Count == MaxRecentRequests) recentRequests.Dequeue();
-                recentRequests.Enqueue(new JObject
-                {
-                    ["timeUtc"] = DateTime.UtcNow.ToString("O"),
-                    ["path"] = path == "/mcp" || path == "/reflect" || path == "/health" ? path : "(unknown)",
-                    ["operation"] = operation, ["description"] = description, ["success"] = success
-                });
+                recentRequests.Enqueue(entry);
             }
         }
 
@@ -256,7 +261,7 @@ namespace ClientMcp
                     string action = command["action"]?.Type == JTokenType.String ? (string)command["action"] : "";
                     switch (action)
                     {
-                        case "prepare": case "run": case "result": case "list": case "release": return "plan " + action;
+                        case "prepare": case "execute": case "run": case "result": case "list": case "release": return "plan " + action;
                         default: return "plan unknown action";
                     }
                 default: return "unknown reflection operation";
@@ -313,7 +318,7 @@ namespace ClientMcp
             return description.Replace("<", "＜").Replace(">", "＞");
         }
 
-        JObject EnqueueAndWait(JObject command, string path, CancellationToken cancellation)
+        JObject EnqueueAndWait(JObject command, string path, CancellationToken cancellation, RequestMetrics metrics)
         {
             // MCP 和原始 HTTP 共用此校验，不能仅依赖工具 schema；无效说明在执行前即被拒绝。
             string description = OperationDescription(command);
@@ -330,7 +335,8 @@ namespace ClientMcp
                     Interlocked.Decrement(ref pendingCount);
                     throw new InvalidOperationException("The request queue is full.");
                 }
-                request = new PendingRequest((JObject)command.DeepClone(), path, description, cancellation, compiled);
+                request = new PendingRequest((JObject)command.DeepClone(), path, description, cancellation, compiled, metrics);
+                metrics.Queued();
                 pending.Enqueue(request);
             }
             try
@@ -365,6 +371,7 @@ namespace ClientMcp
             {
                 Interlocked.Decrement(ref pendingCount);
                 if (!request.TryBegin()) continue;
+                request.Metrics?.BeginExecution();
                 executed++;
                 bool isStatus = request.Command["op"]?.Type == JTokenType.String && (string)request.Command["op"] == "status";
                 string logPrefix = "[ClientMCP][" + request.Path + "] ";
@@ -387,16 +394,18 @@ namespace ClientMcp
                     {
                         string action = request.Command["action"]?.Type == JTokenType.String ? (string)request.Command["action"] : "";
                         bool originalReceipt = request.Command["op"]?.Type == JTokenType.String && ((string)request.Command["op"] == "plan" || (string)request.Command["op"] == "script") &&
-                            (action == "run" || action == "result") && result?["cacheHit"]?.Type == JTokenType.Boolean && (bool)result["cacheHit"];
+                            (action == "execute" || action == "run" || action == "result") && result?["cacheHit"]?.Type == JTokenType.Boolean && (bool)result["cacheHit"];
                         string receiptNotice = originalReceipt ? "（返回原回执，未重复执行）" : "";
                         if (IsFailedPlanReceipt(result)) log(logPrefix + "失败" + receiptNotice + "：" + request.Description, true);
                         else log(logPrefix + "成功" + receiptNotice + "：" + request.Description, false);
                     }
+                    request.Metrics?.CompleteExecution();
                     request.Completion.TrySetResult(result);
                 }
                 catch (Exception error)
                 {
                     if (!isStatus) log(logPrefix + "失败：" + request.Description, true);
+                    request.Metrics?.CompleteExecution();
                     request.Completion.TrySetException(error);
                 }
             }
@@ -459,6 +468,36 @@ namespace ClientMcp
             catch (JsonException) { }
         }
 
+        // 只记录单次请求的时间与大小；跨线程发布时间戳，回包后保存固定快照，不暴露参数或结果。
+        sealed class RequestMetrics
+        {
+            readonly long received = Stopwatch.GetTimestamp();
+            long queued;
+            long started;
+            long completed;
+            public void Queued() => Interlocked.Exchange(ref queued, Stopwatch.GetTimestamp());
+            public void BeginExecution() => Interlocked.Exchange(ref started, Stopwatch.GetTimestamp());
+            public void CompleteExecution() => Interlocked.Exchange(ref completed, Stopwatch.GetTimestamp());
+            public JObject Snapshot(int? responseBytes)
+            {
+                var now = Stopwatch.GetTimestamp();
+                var queuedAt = Interlocked.Read(ref queued);
+                var startedAt = Interlocked.Read(ref started);
+                var completedAt = Interlocked.Read(ref completed);
+                return new JObject
+                {
+                    ["durationMs"] = Milliseconds(received, now),
+                    ["queueMs"] = queuedAt == 0 ? JValue.CreateNull() : new JValue(Milliseconds(queuedAt,
+                        startedAt == 0 ? now : Math.Min(startedAt, now))),
+                    // 未开始或响应时仍在执行不能伪装为执行耗时为零；真实结果仍以操作回执为准。
+                    ["executionMs"] = startedAt == 0 || completedAt == 0 || completedAt > now
+                        ? JValue.CreateNull() : new JValue(Milliseconds(startedAt, completedAt)),
+                    ["responseBytes"] = responseBytes.HasValue ? new JValue(responseBytes.Value) : JValue.CreateNull()
+                };
+            }
+            static double Milliseconds(long begin, long end) => Math.Max(0, end - begin) * 1000.0 / Stopwatch.Frequency;
+        }
+
         sealed class PendingRequest
         {
             int state;
@@ -466,11 +505,14 @@ namespace ClientMcp
             public readonly Func<ScriptGlobals, object> Compiled;
             public readonly string Path;
             public readonly string Description;
+            public readonly RequestMetrics Metrics;
             readonly CancellationToken cancellation;
             public readonly CancellationTokenRegistration Cancellation;
             public readonly TaskCompletionSource<JObject> Completion = new TaskCompletionSource<JObject>(TaskCreationOptions.RunContinuationsAsynchronously);
-            public PendingRequest(JObject command, string path, string description, CancellationToken cancellation, Func<ScriptGlobals, object> compiled = null)
+            public PendingRequest(JObject command, string path, string description, CancellationToken cancellation,
+                Func<ScriptGlobals, object> compiled = null, RequestMetrics metrics = null)
             {
+                Metrics = metrics;
                 Compiled = compiled;
                 Command = command;
                 Path = path;

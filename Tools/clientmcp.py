@@ -30,6 +30,7 @@ _OPERATION_DESCRIPTIONS = {
 }
 _PLAN_ACTION_DESCRIPTIONS = {
     "prepare": "准备缓存反射计划",
+    "execute": "准备并执行反射计划",
     "run": "执行缓存反射计划",
     "result": "查询反射计划执行结果",
     "list": "列出缓存反射计划",
@@ -275,18 +276,35 @@ class ClientMcp:
 
     def run_plan(
         self, plan_id, operation_id, *, session_id, parameters=None,
-        description=_DESCRIPTION_UNSET
+        result_steps=None, description=_DESCRIPTION_UNSET
     ):
         """执行调用方明确编号的操作；不自动重试，失败回执也原样返回。"""
         payload = {"planId": plan_id, "operationId": operation_id, "sessionId": session_id}
         if parameters is not None:
             payload["parameters"] = parameters
+        if result_steps is not None:
+            payload["resultSteps"] = result_steps
         return self.request("plan", action="run", description=description, **payload)
 
-    def plan_result(self, operation_id, *, session_id, description=_DESCRIPTION_UNSET):
+    def execute_plan(
+        self, plan_id, operation_id, steps, *, session_id, parameters=None,
+        result_steps=None, description=_DESCRIPTION_UNSET
+    ):
+        """一次准备并执行；调用方提供当前会话和操作编号，不隐式获取或重试。"""
+        payload = {"planId": plan_id, "operationId": operation_id,
+                   "sessionId": session_id, "steps": steps}
+        if parameters is not None:
+            payload["parameters"] = parameters
+        if result_steps is not None:
+            payload["resultSteps"] = result_steps
+        return self.request("plan", action="execute", description=description, **payload)
+
+    def plan_result(self, operation_id, *, session_id, result_steps=None,
+                    description=_DESCRIPTION_UNSET):
         """查询原操作回执；会话失效时不自动换编号或重新执行。"""
+        payload = {} if result_steps is None else {"resultSteps": result_steps}
         return self.request("plan", action="result", operationId=operation_id,
-                            sessionId=session_id, description=description)
+                            sessionId=session_id, description=description, **payload)
 
     def list_plans(self, *, description=_DESCRIPTION_UNSET):
         return self.request("plan", action="list", description=description)

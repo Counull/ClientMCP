@@ -204,6 +204,11 @@ class TestClientMcp(unittest.TestCase):
                 "action": "prepare", "planId": "sample-plan", "steps": steps,
                 "description": "准备缓存反射计划",
             }),
+            (lambda: client.execute_plan("sample-plan", "operation-42", steps, session_id="session-explicit"), {
+                "action": "execute", "planId": "sample-plan", "steps": steps,
+                "operationId": "operation-42", "sessionId": "session-explicit",
+                "description": "准备并执行反射计划",
+            }),
             (lambda: client.run_plan("sample-plan", "operation-42", session_id="session-explicit"), {
                 "action": "run", "planId": "sample-plan", "operationId": "operation-42",
                 "sessionId": "session-explicit", "description": "执行缓存反射计划",
@@ -228,6 +233,8 @@ class TestClientMcp(unittest.TestCase):
         client = self.client()
         calls = (
             lambda text: client.prepare_plan("sample-plan", [], description=text),
+            lambda text: client.execute_plan("sample-plan", "operation-42", [], session_id="session-test",
+                                             description=text),
             lambda text: client.run_plan("sample-plan", "operation-42", session_id="session-test",
                                          description=text),
             lambda text: client.plan_result("operation-42", session_id="session-test", description=text),
@@ -257,6 +264,27 @@ class TestClientMcp(unittest.TestCase):
         self.assertEqual(steps, original_steps)
         self.assertEqual(parameters, original_parameters)
 
+    def test_plan_selection_is_forwarded_without_extra_requests(self):
+        client = self.client()
+        steps = [{"op": "get", "type": "Example.Type", "member": "Shared"}]
+        for selected in (None, [], [0]):
+            with self.subTest(selected=selected):
+                before = len(self.recorded_requests())
+                calls = (
+                    client.execute_plan("sample-plan", "operation-42", steps, session_id="session-test",
+                                        parameters={"value": 3}, result_steps=selected),
+                    client.run_plan("sample-plan", "operation-42", session_id="session-test", result_steps=selected),
+                    client.plan_result("operation-42", session_id="session-test", result_steps=selected),
+                )
+                self.assertEqual(len(self.recorded_requests()) - before, 3)
+                for response in calls:
+                    received = response["received"]
+                    if selected is None:
+                        self.assertNotIn("resultSteps", received)
+                    else:
+                        self.assertEqual(received["resultSteps"], selected)
+                self.assertEqual(calls[0]["received"]["parameters"], {"value": 3})
+
     def test_plan_receipts_preserve_completed_and_failed_states(self):
         client = self.client()
         for operation_id, expected in self.server.plan_receipts.items():
@@ -274,6 +302,8 @@ class TestClientMcp(unittest.TestCase):
         calls = (
             lambda: client.run_plan("sample-plan", session_id="session-test"),
             lambda: client.run_plan("sample-plan", "operation-42"),
+            lambda: client.execute_plan("sample-plan", "operation-42", []),
+            lambda: client.execute_plan("sample-plan", steps=[], session_id="session-test"),
             lambda: client.plan_result(session_id="session-test"),
             lambda: client.plan_result("operation-42"),
             lambda: client.release_plan("sample-plan"),

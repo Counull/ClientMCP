@@ -4,9 +4,11 @@
 
 ## Now
 
+- 当前版本 `0.1.0-preview.7`：计划新增 `execute`，一次请求完成准备并执行；`execute/run/result` 支持 `resultSteps`，只返回指定步骤，完整回执仍保留。状态接口的现有请求记录增加 `durationMs/queueMs/executionMs/responseBytes`，便于区分运行时处理、排队、执行与输出大小；原 `prepare → run` 保持兼容。协议与示例见[操作计划](../Tools/README.md#优先复用已验证的操作计划)。
+
 - Agent 上下文获取规则已更新：MCP 初始化提示、反射工具描述与使用说明均要求优先复用已验证入口，首次无入口且可读源码时先定向阅读，已知结构不重复 `types/inspect`；当前对象和必要状态仍从目标实例读取，源码缺失、信息不足或版本不匹配时才做最小反射探测。已知连续读取可合并计划，依赖状态的写入保留读取后的判断。此次调整调用策略提示，不改变反射协议或执行器；首次操作的实际提速尚待消费工程对比测量。规则见[上下文获取顺序](../Tools/README.md#agent-获取上下文的顺序)。
 
-- 双端共享核心与可选 C# 脚本已实现，版本 `0.1.0-preview.6`。`Runtime/Core` 的 asmdef 禁止引擎引用，.NET Standard 2.0 项目编译同一份源码；Unity Adapter 保留原启动方式和场景对象语义，.NET Adapter 提供根对象注册、手动 Pump 或专用诊断线程。完整接入、安装和兼容说明见[工程结构](architecture-and-release.md#双端通用核心与-c-脚本)。
+- 双端共享核心与可选 C# 脚本已实现。`Runtime/Core` 的 asmdef 禁止引擎引用，.NET Standard 2.0 项目编译同一份源码；Unity Adapter 保留原启动方式和场景对象语义，.NET Adapter 提供根对象注册、手动 Pump 或专用诊断线程。完整接入、安装和兼容说明见[工程结构](architecture-and-release.md#双端通用核心与-c-脚本)。
 - Roslyn 编译器为可选模块，默认关闭；编译在请求线程，脚本在宿主队列执行。支持 prepare/run/result/list/release、参数、共享句柄与成功/失败回执去重，本机 HTTP 和中转 MCP 共用。同步语法限制不构成沙箱；已开始的脚本不能因超时被强制终止，IL2CPP 不支持。可选 Unity DLL 由 Tools/install-roslyn.ps1 本地构建，不作为源码提交或随默认 UPM 安装。
 
 - [首版实现任务 #1](https://github.com/Counull/ClientMCP/issues/1)的功能与首轮验收已完成：通用反射元操作、本机 HTTP / MCP 接入和外部脚本客户端已实现，并在真实消费工程的 Editor Play 与 Windows Mono Player 中完成不暂停的对象注入、自然移动和显示验证。中转与 1:N 路由已添加，公网尚未部署，职责与接入方式见 [连接说明](remote-diagnostics.md)。
@@ -23,10 +25,10 @@
 
 - Unity 菜单 **Tools → ClientMCP → Connection Status** 提供当前 Editor Play 实例的启停与状态查看：监听入口、连接文件位置、分类请求计数、最近 16 条已完成请求的说明和结果；只统计已通过认证的实际访问，不显示令牌，不推断 AI 持续在线。外部 `/health` 与 `clientmcp_status` 同步提供 `connection` 快照。反射操作新增必填 `description`，Unity Console 记录执行说明和成功或失败，不自动展开参数或返回值；Python 方法省略时提供通用说明，原始 JSON / MCP 调用需要显式填写。
 
-- 通用操作计划已实现并通过独立验证：`prepare/run/result/list/release` 保存有限步骤、绑定本次参数和前序结果、同帧顺序执行、缓存成功或失败回执；新编号真正再执行，原编号重试不重复写入。缓存限当前会话，容量满时拒绝新建，显式释放会结束去重保证；没有自动回滚或定时调度。AI 优先复用规则同时进入使用说明与 MCP 提示；Console 对缓存回执明确标注“返回原回执，未重复执行”。具体业务计划与验收记录留在消费工程。
+- 通用操作计划已实现并通过独立验证：`prepare/execute/run/result/list/release` 保存有限步骤、绑定本次参数和前序结果、同帧顺序执行、缓存成功或失败回执；新编号真正再执行，原编号重试不重复写入。缓存限当前会话，容量满时拒绝新建，显式释放会结束去重保证；没有自动回滚或定时调度。AI 优先复用规则同时进入使用说明与 MCP 提示；Console 对缓存回执明确标注“返回原回执，未重复执行”。具体业务计划与验收记录留在消费工程。
 
 - 已使用 Unity 6000.5.9f1 创建 `Project/` 开发验证工程，并生成 `DiagnosticsSandbox` 场景。
-- UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.6`；最低版本声明为 Unity 2022.3，依赖 Unity 官方 Newtonsoft Json。开发工程仍使用 Unity 6000.5.9f1。
+- UPM 包位于 `Project/Packages/com.counull.clientmcp/`，版本 `0.1.0-preview.7`；最低版本声明为 Unity 2022.3，依赖 Unity 官方 Newtonsoft Json。开发工程仍使用 Unity 6000.5.9f1。
 - 整个工程与文档已发布至 [Counull/ClientMCP](https://github.com/Counull/ClientMCP) 公开仓库，默认分支为 `main`。采用 MIT 许可证。
 - 已用独立消费工程验证 HTTPS Git URL 子目录安装，无需手动复制包或源码。
 - Git URL 安装、版本标签及源码维护方式见 [工程结构与 UPM 发布流程](architecture-and-release.md)。
@@ -44,6 +46,12 @@
 - 首轮功能实现与验收无阻塞。其他平台、IL2CPP 和公网连接不在本轮已验证范围内。
 
 ## 依据与验证
+
+2026-10-26 计划单次执行与结果选择：
+
+- .NET Standard 2.0 共享核心与检查程序编译通过；新增 65 项真实反射及本机 HTTP/MCP 检查通过，覆盖步骤依赖、结果选择、完整回执查询、失败停止、成功及失败去重、无效参数不登记计划、容量、执行前/后超时，以及计时与实际 UTF-8 响应字节数。原核心 35 项检查、Python 25 项 HTTP 契约检查通过。
+- 同一通用夹具的 8 步读取，首次由 `prepare + run` 两个请求降为 `execute` 一个请求；只返回一个目标步骤时，执行响应体由 25,051 字节降为 3,311 字节。该数据是本机 .NET 夹具的请求数和输出量，不代表 Unity 或消费工程端到端提速比例。
+- 本轮未运行 Unity Editor、构建 Player 或启动中转，也未更新消费工程运行包；旧 Player 与中转工具发现需使用新版共享源码后重新构建。原始检查输出位于本地 `.scratch/plan-fast-checks.log` 与 `.scratch/plan-python-checks.log`，不纳入公开历史。
 
 2026-10-26 源码优先上下文规则：
 

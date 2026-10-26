@@ -4,6 +4,8 @@ using System.Text;
 using ClientMcp;
 using Newtonsoft.Json.Linq;
 
+PlanChecks.Run();
+
 int checks = 0;
 void Check(bool value, string message) { if (!value) throw new Exception(message); checks++; }
 var info = Path.Combine(Path.GetTempPath(), "clientmcp-check-" + Guid.NewGuid().ToString("N") + ".json");

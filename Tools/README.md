@@ -2,6 +2,16 @@
 
 `clientmcp.py` 只依赖 Python 3 标准库，无需安装 SDK。脚本通过本机 HTTP 接口发送通用反射操作，可以在 Editor 的 Play Mode 或支持的独立运行程序中使用。
 
+## Agent 获取上下文的顺序
+
+1. 优先复用当前上下文或消费工程中已验证的计划、脚本入口；已知计划属于当前会话时直接执行，未知是否有可用计划时才 `list_plans()`，不在每次操作前重复列举。
+2. 首次操作且无可复用步骤时，若 Agent 可读取消费工程源码，先用自己的文件工具定向阅读相关定义和必要调用点，确认完整类型名、对象入口、成员路径、参数类型及调用条件。信息足够构造操作即停止，不扫描整个工程。
+3. 对源码已明确的结构和签名，直接使用对应 `type`、`member`、`declaringType`、`parameterTypes`，无需例行 `types → inspect`。当前对象、句柄和影响本次操作的状态仍从目标运行实例读取。
+4. 已知的连续对象定位和读取可以合并到现有 `plan`，减少逐层往返。需要根据读取结果判断是否写入时，先完成读取和判断，再发起写入；计划没有条件分支，不会因业务状态不满足而自动跳过后续写入。
+5. 源码不可访问、信息不足或与运行版本不匹配时，才对相关类型和成员做最小反射探测；首次验证成功后按下方规则保存步骤。源码读取由 Agent 完成，ClientMCP 不提供源码访问接口。
+
+写入或调用前，通过源码或 `inspect` 明确成员签名和副作用，并检查必要的当前状态。源码可读不表示与运行包完全一致；发现类型、成员或签名不匹配时只核对相关路径，不以反复全量探测作为默认恢复方式。超时或执行结果未知时，仍先沿用原操作编号重试或查回执。
+
 ## 连接一个运行实例
 
 运行时必须显式启用 ClientMCP。通过启动参数启用时，建议同时用 `--clientmcp-info <绝对路径>` 指定私有连接文件：
@@ -16,7 +26,7 @@
 
 ```powershell
 python Tools/clientmcp.py --info <私有连接文件路径> --health
-python Tools/clientmcp.py --info <私有连接文件路径> '{"op":"types","description":"查找 Unity 时间类型","query":"UnityEngine.Time","limit":10}'
+# 已知类型与属性时直接读取，无需先 types/inspect。
 '{"op":"get","description":"检查当前游戏速度","type":"UnityEngine.Time","member":"timeScale","kind":"property"}' |
     python Tools/clientmcp.py --info <私有连接文件路径> -
 ```
@@ -32,10 +42,9 @@ from clientmcp import ClientMcp
 
 client = ClientMcp(info="<私有连接文件路径>")
 print(client.health())
-print(client.types("UnityEngine.Time"))
-print(client.inspect(type="UnityEngine.Time"))
 
-# 默认只读字段；属性需要显式 kind="property"，因为 getter 可能执行代码。
+# 本例已明确类型和属性；未知签名时再定向查源码或 inspect。
+# 默认读取字段；属性需要显式 kind="property"，因为 getter 可能执行代码。
 before = client.get(type="UnityEngine.Time", member="timeScale", kind="property")
 client.set(type="UnityEngine.Time", member="timeScale", kind="property", value=0.75,
            description="临时降低游戏速度，便于观察运行状态")
@@ -63,8 +72,8 @@ Unity 中可通过 **Tools → ClientMCP → Connection Status** 查看当前 Ed
 objects = client.find("UnityEngine.Transform", scope="scene", limit=20)
 print(objects)
 
-# 先检查 find 返回的对象描述，选取其中一个句柄后再读取成员。
-print(client.inspect("o1"))
+# 从 find 的结果中选取本次目标句柄；已知 name 是属性，可直接读取。
+# o1 仅为格式示例，实际应替换成所选目标的当前句柄。
 print(client.get("o1", "name", kind="property"))
 ```
 
@@ -87,7 +96,7 @@ print(client.get("o1", "name", kind="property"))
 
 ## 优先复用已验证的操作计划
 
-首次操作需要探测类型和对象结构时，保存验证过的通用反射步骤。后续相同意图先 `list_plans()` 查找已准备的入口，直接 `run_plan()`；只有缺少计划或会话、引用失效时，才加载本地保存的步骤并做必要恢复，不重复读文档、查源码或临时编译辅助类。具体步骤、参数和本地脚本保存在消费工程；插件只认识反射元操作。
+首次操作按上方顺序获取必要上下文，保存验证过的通用反射步骤。后续相同意图已知当前会话入口时直接 `run_plan()`，未知时才 `list_plans()` 查找；只有缺少计划或会话、引用失效时，才加载本地保存的步骤并做必要恢复，不重复读文档、查源码或临时编译辅助类。具体步骤、参数和本地脚本保存在消费工程；插件只认识反射元操作。
 
 缓存的是步骤，不是当前运行值。计划中不能硬编码 `o1` 或 `{"$ref":"o1"}`；通过本次参数或前序步骤引用对象。游戏重启、换局或场景切换后应重新定位所需对象。计划和回执只在当前 Runtime 会话存在，停止接入或域重载后需要重新准备；客户端可以把步骤 JSON 保存在自己的项目里。
 
@@ -155,7 +164,7 @@ client.release_plan("append-text-v1", session_id=session_id)
 
 `release` 仅移除 ClientMCP 持有的引用，不会销毁 Unity 对象，也不会调用 `Dispose`。值类型读取结果是副本；修改副本后需显式写回所属字段或属性。
 
-反射只能访问当前程序实际保留的类型和成员。构建裁剪、AOT 和平台接口支持会影响结果；当前不宣称 IL2CPP 已通过验证。运行时执行的 getter、setter、构造函数和方法具有原代码的副作用，脚本应先查看签名，再按当前实例状态操作。
+反射只能访问当前程序实际保留的类型和成员。构建裁剪、AOT 和平台接口支持会影响结果；当前不宣称 IL2CPP 已通过验证。运行时执行的 getter、setter、构造函数和方法具有原代码的副作用，脚本应通过源码或 `inspect` 明确签名和副作用，再按当前实例状态操作。
 
 ## 错误与本地契约测试
 

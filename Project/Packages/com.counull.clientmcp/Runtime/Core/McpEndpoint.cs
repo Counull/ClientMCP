@@ -40,7 +40,9 @@ namespace ClientMcp
                             ["protocolVersion"] = SupportsVersion(requested) ? requested : ProtocolVersion,
                             ["capabilities"] = new JObject { ["tools"] = new JObject { ["listChanged"] = false } },
                             ["serverInfo"] = new JObject { ["name"] = "ClientMCP", ["version"] = "0.1.0-preview.6" },
-                            ["instructions"] = "每次反射操作必须提供简短中文 description 说明意图，供运行时活动记录使用。研究反射路径前，先用 op=plan、action=list 查看已有计划；首次 prepare 后复用步骤，通过 run.parameters 传入本次参数。新的操作意图使用新的 operationId；重试沿用原 operationId 或用 result 查询回执。计划缺失或引用失效时只恢复必要步骤和对象入口，不缓存运行值或跨会话句柄。写入或调用前先检查成员元数据。计划仅在主线程同一帧执行有限短时步骤，失败立即停止且不回滚；不得依赖 UnityEditor、动态编译、定时器或阻塞方法。调用宿主已有的非阻塞方法只能表示已发起，回执不代表异步工作已经完成。"
+                            ["instructions"] = "优先复用当前上下文或消费工程中已验证的计划、脚本入口；未知是否有可用计划时，用 op=plan、action=list 查询，已知当前会话计划可直接 run。首次操作且无可复用步骤时，若 Agent 可读取消费工程源码，先用自己的文件工具定向阅读相关定义和必要调用点，确认完整类型名、对象入口、成员路径、parameterTypes 和调用条件，信息足够即停止。源码已明确的结构和签名无需例行 types/inspect；源码不可用、信息不足或与运行版本不符时，才对相关类型和成员做最小反射探测。" +
+                                "当前对象、句柄和必要状态仍从目标实例读取，不缓存运行值或跨会话句柄。已知的连续定位和读取步骤可合并为 plan；需要根据状态判断是否写入时，先读取并判断，再执行写入，plan 不提供条件分支。写入或调用前通过源码或 inspect 明确签名和副作用，并检查必要的当前状态。首次验证后保存步骤，后续复用；失效时只恢复必要步骤和对象入口。" +
+                                "每次反射操作必须提供简短中文 description 说明意图，不含凭据。prepare 后通过 run.parameters 传入本次参数；新意图使用新 operationId，超时重试沿用原编号或用 result 查询回执。计划仅在主线程同一帧执行有限短时步骤，失败停止且不回滚，不依赖 UnityEditor、动态编译、定时器或阻塞方法。宿主非阻塞方法的回执仅表示已发起，不表示异步工作完成。"
                         };
                         break;
                     case "ping": result = new JObject(); break;
@@ -60,7 +62,8 @@ namespace ClientMcp
                 new JObject
                 {
                     ["name"] = "clientmcp_reflect",
-                    ["description"] = "通用运行时反射：types/find/inspect/get/set/create/invoke/release，以及可复用的 plan。每次调用必须提供简短中文description说明意图，显示在活动记录和Unity Console中，不要包含凭据。先plan list再研究，prepare一次后run复用步骤；新意图新operationId，重试原ID或查result，引用失效时轻量恢复，不缓存运行值或跨会话句柄。计划同帧短时顺序执行，失败停止无回滚，不依赖UnityEditor或动态编译；非阻塞宿主方法只发起而不等待异步完成。普通反射实例用target句柄，静态用type；字段默认kind=field，属性须kind=property；对象参数用{$ref:句柄}。先inspect获取成员与parameterTypes，不自动调用getter。",
+                    ["description"] = "通用运行时反射：types/find/inspect/get/set/create/invoke/release，以及可复用的 plan。优先复用已验证入口；未知是否有计划时才 plan list，已知当前会话计划直接 run。首次无可复用步骤且可读消费工程源码时，先用文件工具定向读源码，确认类型、对象入口、成员路径、parameterTypes 和调用条件，信息足够即停止；已知结构无需例行 types/inspect，仅在源码不可用、信息不足或版本不符时最小探测。" +
+                        "当前对象和必要状态仍从目标实例读取；已知连续读取可合并 plan，依赖状态的写入须先读取判断再执行，plan 无条件分支。写入或调用前通过源码或 inspect 明确签名和副作用。每次提供不含凭据的简短中文 description。prepare 后复用步骤，新意图新 operationId，超时重试原编号或查 result；失效时轻量恢复，不缓存运行值或跨会话句柄。计划同帧短时执行，失败停止无回滚，不依赖 UnityEditor 或动态编译；非阻塞方法回执不代表异步完成。实例用 target，静态用 type；字段默认 kind=field，属性须 kind=property；对象参数用 {$ref:句柄}；inspect 不调用 getter。",
                     ["inputSchema"] = new JObject
                     {
                         ["type"] = "object", ["required"] = new JArray("op", "description"),
